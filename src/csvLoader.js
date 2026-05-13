@@ -3,7 +3,9 @@
 // Expected columns (header order is flexible, names are matched):
 //   timestamp, team, agent_type, agent_id, x, y, z, yaw, alive, event, target
 //
-// `alive` accepts 1/0 or true/false (case-insensitive).
+// `alive` accepts the new three-state form `operational` / `incapacitated`
+// / `destroyed`, or the legacy 1/0 / true/false form (1/true → operational,
+// 0/false → destroyed).
 // `timestamp` should be in ascending order; the loader sorts defensively
 // per-agent in case input is not strictly ordered.
 // `event` and `target` are optional. Rows with `event === 'fire'` are
@@ -26,7 +28,14 @@ function parseCsvText(text) {
   const hasEvent = 'event' in idx;
   const hasTarget = 'target' in idx;
 
-  const truthy = v => v === '1' || /^true$/i.test(v);
+  // Three-state status with legacy boolean fallback.
+  function parseStatus(raw) {
+    const s = (raw ?? '').trim().toLowerCase();
+    if (s === 'incapacitated') return 'incapacitated';
+    if (s === 'destroyed' || s === '0' || s === 'false') return 'destroyed';
+    // 'operational', '1', 'true', and unknown values all map to operational.
+    return 'operational';
+  }
 
   // CSV yaw is stored in math convention: yaw = atan2(Δz, Δx), so the unit's
   // forward vector is (cos yaw, sin yaw) with +x as reference. Our three.js
@@ -36,6 +45,7 @@ function parseCsvText(text) {
   const rows = new Array(lines.length - 1);
   for (let i = 1; i < lines.length; i++) {
     const f = lines[i].split(',');
+    const status = parseStatus(f[idx.alive]);
     rows[i - 1] = {
       t:      parseFloat(f[idx.timestamp]),
       team:   f[idx.team].trim(),
@@ -45,7 +55,11 @@ function parseCsvText(text) {
       y:      parseFloat(f[idx.y]),
       z:      parseFloat(f[idx.z]),
       yaw:    hasYaw ? (Math.PI / 2 - parseFloat(f[idx.yaw])) : 0,
-      alive:  truthy(f[idx.alive].trim()),
+      status,
+      // `alive` is kept for downstream code that just needs "is the unit
+      // still on the battlefield" — destroyed flips it false; operational
+      // and incapacitated both keep it true.
+      alive:  status !== 'destroyed',
       event:  hasEvent  ? (f[idx.event]  ?? '').trim() : '',
       target: hasTarget ? (f[idx.target] ?? '').trim() : '',
     };
@@ -63,7 +77,7 @@ function rowsToScenario(rows) {
     if (!byId.has(r.id)) {
       byId.set(r.id, { id: r.id, team: r.team, type: r.type, track: [] });
     }
-    byId.get(r.id).track.push({ t: r.t, x: r.x, y: r.y, z: r.z, yaw: r.yaw, alive: r.alive });
+    byId.get(r.id).track.push({ t: r.t, x: r.x, y: r.y, z: r.z, yaw: r.yaw, alive: r.alive, status: r.status });
     if (r.event === 'fire' && r.target) {
       events.push({ t: r.t, shooter: r.id, target: r.target });
     }

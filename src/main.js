@@ -3,7 +3,16 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { createUnit } from './units.js';
 import { loadScenarioFromCsv } from './csvLoader.js';
 import { CinematicDirector, loadCameraSchedule } from './cinematic.js';
-import { EffectsManager } from './effects.js';
+import { EffectsManager, attachDamageEffect, createStatusRing } from './effects.js';
+
+const TEAM_PRIMARY_HEX = { blue: 0x4ea0ff, red: 0xff5b5b };
+const INCAP_RING_HEX   = 0xffd166;
+const INCAP_DARKEN     = 0.45; // multiply original material color by this
+// Status-ring Y offset above the sampled terrain height. The ring is a
+// flat horizontal disc, so on a slope its outer edge can dip below the
+// surrounding terrain; lifting it well above the local sample keeps the
+// whole ring visible without making it look detached from the ground.
+const STATUS_RING_Y = 0.7;
 import { unlockAudio, setMuted, isMuted } from './audio.js';
 
 const CSV_URL = './data/kaist_simulation.csv';
@@ -279,15 +288,51 @@ loadingEl.remove();
   }
 }
 
+// Last keyframe before the unit is destroyed — used as the resting place
+// of the team-colored status ring. Returns null if the unit never dies.
+function findDeathPos(track) {
+  let last = null;
+  for (const kf of track) {
+    if (kf.status === 'destroyed') return last;
+    last = kf;
+  }
+  return null;
+}
+
 const agents = scenario.agents.map(a => {
   const mesh = createUnit(a.type, a.team);
   mesh.visible = false; // shown once we apply first frame
   scene.add(mesh);
+  // Attach an incapacitated-state damage effect only for agents whose
+  // track ever enters that status — saves nodes for the common case.
+  const hasIncap = a.track.some(kf => kf.status === 'incapacitated');
+  const damage = hasIncap ? attachDamageEffect(mesh, a.type) : null;
+
+  // Snapshot original material colors so the incapacitated darken can be
+  // undone if the unit returns to operational (or proceeds to destroyed).
+  // Materials are per-unit (not shared across agents), so mutating them
+  // doesn't bleed into other units.
+  const originalColors = new Map();
+  mesh.traverse(o => {
+    if (o.material && o.material.color && !originalColors.has(o.material)) {
+      originalColors.set(o.material, o.material.color.clone());
+    }
+  });
+
+  // Status ring: yellow when incapacitated, team color when destroyed.
+  const ring = createStatusRing(a.type);
+  scene.add(ring);
+
   return {
     spec: a,
     mesh,
     cursor: 0,           // last keyframe index used (for fast linear interpolation)
     aliveLast: true,
+    damage,
+    originalColors,
+    ring,
+    deathPos: findDeathPos(a.track),
+    statusApplied: 'operational',
   };
 });
 
@@ -399,25 +444,58 @@ function sampleAt(track, t, cursor) {
     y: a.y + (b.y - a.y) * u,
     z: a.z + (b.z - a.z) * u,
     yaw: a.yaw + (b.yaw - a.yaw) * u,
-    // alive switches at the *next* keyframe — death is instantaneous
+    // alive / status switch at the *next* keyframe — transitions are instantaneous
     alive: u >= 1 ? b.alive : a.alive,
+    status: u >= 1 ? b.status : a.status,
     cursor,
   };
 }
 
+// Apply per-status visuals: darken or restore material colors and update
+// the status ring's color/visibility. Idempotent — guarded by statusApplied
+// in applyFrame so the work only happens on transitions.
+function applyStatusVisuals(ag, status) {
+  if (status === 'incapacitated') {
+    for (const [m, c] of ag.originalColors) m.color.copy(c).multiplyScalar(INCAP_DARKEN);
+    ag.ring.material.color.setHex(INCAP_RING_HEX);
+    ag.ring.visible = true;
+  } else {
+    // Both 'operational' and 'destroyed' want the underlying mesh colors
+    // restored — destroyed hides the mesh, but if we scrub back through
+    // incap and out the other side we don't want stacked multiplications.
+    for (const [m, c] of ag.originalColors) m.color.copy(c);
+    if (status === 'destroyed') {
+      const hex = TEAM_PRIMARY_HEX[ag.spec.team] ?? 0xffffff;
+      ag.ring.material.color.setHex(hex);
+      ag.ring.visible = true;
+    } else {
+      ag.ring.visible = false;
+    }
+  }
+}
+
 function makeCounts() {
-  const c = { blue: {}, red: {} };
-  for (const team of Object.keys(c)) for (const type of TYPE_ORDER) c[team][type] = 0;
+  const c = { op: { blue: {}, red: {} }, incap: { blue: {}, red: {} } };
+  for (const bucket of [c.op, c.incap]) {
+    for (const team of Object.keys(bucket)) {
+      for (const type of TYPE_ORDER) bucket[team][type] = 0;
+    }
+  }
   return c;
 }
 
 function applyFrame(t) {
-  const alive = makeCounts();
+  const counts = makeCounts();
   for (const ag of agents) {
     const s = sampleAt(ag.spec.track, t, ag.cursor);
     ag.cursor = s.cursor;
 
-    if (s.alive) {
+    if (s.status !== ag.statusApplied) {
+      applyStatusVisuals(ag, s.status);
+      ag.statusApplied = s.status;
+    }
+
+    if (s.status !== 'destroyed') {
       ag.mesh.visible = true;
       // CSV y is treated as AGL — ground units use 0, drones store altitude,
       // trench occupants use negative values to sit below the surface.
@@ -425,7 +503,9 @@ function applyFrame(t) {
       ag.mesh.rotation.y = s.yaw;
 
       const turret = ag.mesh.userData.turret;
-      const ev = activeFireEvent(ag.spec.id, t);
+      // Incapacitated units stop aiming — they're still on the field but
+      // out of action. Only operational units track targets.
+      const ev = s.status === 'operational' ? activeFireEvent(ag.spec.id, t) : null;
       let aim = null;
       if (ev) {
         const targetAgent = agentsById.get(ev.target);
@@ -457,17 +537,41 @@ function applyFrame(t) {
         ag.mesh.rotation.y = s.yaw + delta * aim.u;
       }
 
-      const bucket = alive[ag.spec.team];
-      if (bucket && (ag.spec.type in bucket)) bucket[ag.spec.type] += 1;
+      if (ag.damage) {
+        ag.damage.setVisible(s.status === 'incapacitated');
+        ag.damage.update(t);
+      }
+
+      // Status ring follows the live unit while it's incapacitated.
+      if (s.status === 'incapacitated') {
+        ag.ring.position.set(s.x, sampleHeight(s.x, s.z) + STATUS_RING_Y, s.z);
+      }
+
+      // Stats: track operational and incapacitated separately. Both count
+      // as "still on the field" for the numeric tally; the bar splits them
+      // into two colored segments so the damaged fraction is visible.
+      const bucketKey = s.status === 'incapacitated' ? 'incap'
+                      : s.status === 'operational'   ? 'op'
+                      : null;
+      if (bucketKey) {
+        const bucket = counts[bucketKey][ag.spec.team];
+        if (bucket && (ag.spec.type in bucket)) bucket[ag.spec.type] += 1;
+      }
     } else {
       ag.mesh.visible = false;
+      if (ag.damage) ag.damage.setVisible(false);
+      // Team-colored ring stays at the death site alongside the wreckage.
+      if (ag.deathPos) {
+        const dp = ag.deathPos;
+        ag.ring.position.set(dp.x, sampleHeight(dp.x, dp.z) + STATUS_RING_Y, dp.z);
+      }
       // wreckage at the death site is rendered by EffectsManager's
       // WreckageEffect — keyed off scenario time so it appears/disappears
       // correctly when scrubbing.
     }
     ag.aliveLast = s.alive;
   }
-  return { alive };
+  return counts;
 }
 
 // ---------- UI ----------
@@ -511,11 +615,14 @@ const statRefs = { blue: { teamAlive: null, teamLost: null, types: {} },
 function makeBar($bd, team, isSub) {
   const bar = document.createElement('div');
   bar.className = `bar team-${team}${isSub ? ' sub' : ''}`;
-  const fill = document.createElement('div');
-  fill.className = 'bar-fill';
-  bar.appendChild(fill);
+  const fillOp = document.createElement('div');
+  fillOp.className = 'bar-fill op';
+  const fillIncap = document.createElement('div');
+  fillIncap.className = 'bar-fill incap';
+  bar.appendChild(fillOp);
+  bar.appendChild(fillIncap);
   $bd.appendChild(bar);
-  return { bar, fill };
+  return { bar, fillOp, fillIncap };
 }
 
 (function buildBreakdownDOM() {
@@ -535,7 +642,9 @@ function makeBar($bd, team, isSub) {
     $bd.appendChild(head);
     statRefs[team].teamAlive = head.querySelector('.alive');
     statRefs[team].teamLost  = head.querySelector('.lost');
-    statRefs[team].teamBar   = makeBar($bd, team, false).fill;
+    const teamBar = makeBar($bd, team, false);
+    statRefs[team].teamFillOp    = teamBar.fillOp;
+    statRefs[team].teamFillIncap = teamBar.fillIncap;
 
     for (const type of TYPE_ORDER) {
       const typeTotal = totals[team][type];
@@ -547,8 +656,10 @@ function makeBar($bd, team, isSub) {
         `<span><span class="alive">${typeTotal}</span>` +
         `<span class="total"> / ${typeTotal}</span></span>`;
       $bd.appendChild(row);
-      const { bar, fill } = makeBar($bd, team, true);
-      statRefs[team].types[type] = { row, alive: row.querySelector('.alive'), bar, fill };
+      const { bar, fillOp, fillIncap } = makeBar($bd, team, true);
+      statRefs[team].types[type] = {
+        row, alive: row.querySelector('.alive'), bar, fillOp, fillIncap,
+      };
     }
   }
 })();
@@ -627,24 +738,32 @@ function tick() {
   for (const team of TEAM_ORDER) {
     const refs = statRefs[team];
     if (!refs.teamAlive) continue;
-    let teamAlive = 0;
+    let teamOp = 0;
+    let teamIncap = 0;
     for (const type of TYPE_ORDER) {
       const ref = refs.types[type];
       if (!ref) continue;
-      const n = stats.alive[team][type] | 0;
+      const op = stats.op[team][type]    | 0;
+      const ic = stats.incap[team][type] | 0;
       const tot = totals[team][type];
-      ref.alive.textContent = String(n);
-      const depleted = n === 0 && tot > 0;
+      const onField = op + ic;
+      ref.alive.textContent = String(onField);
+      const depleted = onField === 0 && tot > 0;
       ref.row.classList.toggle('depleted', depleted);
       ref.bar.classList.toggle('depleted', depleted);
-      ref.fill.style.width = `${(n / tot) * 100}%`;
-      teamAlive += n;
+      ref.fillOp.style.width    = `${(op / tot) * 100}%`;
+      ref.fillIncap.style.width = `${(ic / tot) * 100}%`;
+      teamOp += op;
+      teamIncap += ic;
     }
-    refs.teamAlive.textContent = String(teamAlive);
-    const lost = teamTotal(team) - teamAlive;
+    const teamOnField = teamOp + teamIncap;
+    const teamTot = teamTotal(team);
+    refs.teamAlive.textContent = String(teamOnField);
+    const lost = teamTot - teamOnField;
     refs.teamLost.textContent = lost > 0 ? `−${lost}` : '';
     refs.teamLost.classList.toggle('zero', lost === 0);
-    refs.teamBar.style.width = `${(teamAlive / teamTotal(team)) * 100}%`;
+    refs.teamFillOp.style.width    = `${(teamOp    / teamTot) * 100}%`;
+    refs.teamFillIncap.style.width = `${(teamIncap / teamTot) * 100}%`;
   }
 
   if (director.shouldOverride(currentTime)) {

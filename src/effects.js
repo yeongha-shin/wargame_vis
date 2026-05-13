@@ -667,6 +667,114 @@ class WreckageEffect {
   }
 }
 
+// ---- Incapacitated state: lighter than wreckage, parented to the live mesh ----
+//
+// When a unit is `incapacitated` it's still visibly on the field but
+// damaged. We layer a faint smoke wisp (and a small flame for vehicles)
+// onto the mesh; main.js toggles visibility per frame based on the
+// agent's current status. Animation phase is driven by absolute scenario
+// time so scrubbing stays deterministic.
+const DAMAGE_SPECS = {
+  tank:         { flameCount: 1, smokeCount: 2, extent: 1.0, topY: 1.8 },
+  artillery:    { flameCount: 1, smokeCount: 2, extent: 1.1, topY: 1.8 },
+  drone:        { flameCount: 1, smokeCount: 1, extent: 0.35, topY: 0.1 },
+  antitank:     { flameCount: 0, smokeCount: 1, extent: 0.4, topY: 1.6 },
+  infantry:     { flameCount: 0, smokeCount: 1, extent: 0.35, topY: 1.5 },
+  command_post: { flameCount: 1, smokeCount: 2, extent: 1.4, topY: 2.0 },
+};
+
+export function attachDamageEffect(hostMesh, type) {
+  const d = DAMAGE_SPECS[type] ?? DAMAGE_SPECS.infantry;
+  const group = new THREE.Group();
+  group.visible = false;
+  hostMesh.add(group);
+
+  const flames = [];
+  for (let i = 0; i < d.flameCount; i++) {
+    const s = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: hotDisc(), color: 0xff8030,
+      blending: THREE.AdditiveBlending, depthWrite: false, transparent: true,
+    }));
+    s.userData = {
+      offX: (Math.random() - 0.5) * d.extent,
+      offZ: (Math.random() - 0.5) * d.extent,
+      offY: d.topY * 0.6,
+      baseScale: 0.7 + Math.random() * 0.2,
+      phase: Math.random() * Math.PI * 2,
+      freq: 14 + Math.random() * 10,
+    };
+    flames.push(s);
+    group.add(s);
+  }
+
+  const smokes = [];
+  for (let i = 0; i < d.smokeCount; i++) {
+    const s = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: smokePuff(), color: 0x252525, transparent: true, depthWrite: false, opacity: 0.4,
+    }));
+    s.userData = {
+      offX: (Math.random() - 0.5) * d.extent * 0.7,
+      offZ: (Math.random() - 0.5) * d.extent * 0.7,
+      startY: d.topY,
+      period: 4 + Math.random() * 1.5,
+      phase: i * 1.7 + Math.random() * 0.8,
+      baseScale: 1.0 + Math.random() * 0.3,
+    };
+    smokes.push(s);
+    group.add(s);
+  }
+
+  return {
+    setVisible(v) { group.visible = !!v; },
+    update(t) {
+      if (!group.visible) return;
+      for (const f of flames) {
+        const flicker = 0.7 + 0.3 * Math.sin(f.userData.phase + t * f.userData.freq);
+        const sc = f.userData.baseScale * flicker;
+        f.scale.set(sc, sc, 1);
+        f.position.set(f.userData.offX, f.userData.offY, f.userData.offZ);
+        f.material.opacity = 0.85 * flicker;
+      }
+      for (const s of smokes) {
+        const u = ((t + s.userData.phase) % s.userData.period) / s.userData.period;
+        s.position.set(s.userData.offX, s.userData.startY + u * 2.6, s.userData.offZ);
+        const sc = s.userData.baseScale * (0.7 + u * 1.2);
+        s.scale.set(sc, sc, 1);
+        s.material.opacity = 0.45 * (1 - u);
+      }
+    },
+  };
+}
+
+// ---- Status ring on the ground ----
+//
+// A flat annulus painted under the unit's footprint that signals its
+// state at a glance: yellow when incapacitated, team color after the
+// unit is destroyed. The ring lives in world space (not parented to
+// the mesh) so it can stay at the death position after the live mesh
+// is hidden.
+const RING_RADII = {
+  infantry:     { outer: 0.85, inner: 0.66 },
+  antitank:     { outer: 0.85, inner: 0.66 },
+  tank:         { outer: 3.2,  inner: 2.55 },
+  artillery:    { outer: 3.8,  inner: 3.05 },
+  drone:        { outer: 1.3,  inner: 1.02 },
+  command_post: { outer: 3.6,  inner: 2.85 },
+};
+
+export function createStatusRing(type) {
+  const r = RING_RADII[type] ?? RING_RADII.infantry;
+  const geo = new THREE.RingGeometry(r.inner, r.outer, 48, 1);
+  const mat = new THREE.MeshBasicMaterial({
+    color: 0xffffff, transparent: true, opacity: 0.85,
+    side: THREE.DoubleSide, depthWrite: false,
+  });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.rotation.x = -Math.PI / 2; // lay flat on XZ
+  mesh.visible = false;
+  return mesh;
+}
+
 export class EffectsManager {
   constructor({ scene, agentsById, sampleHeight = () => 0, camera = null }) {
     this.scene = scene;

@@ -51,18 +51,23 @@
     #stats .lost.zero { display:none; }
     #stats .row.sub.depleted .alive { color: var(--red); }
 
-    /* Strength bars under each stats row */
+    /* Strength bars under each stats row.
+       Bar = flex container. Two stacked fills:
+         .op    — operational fraction, team color
+         .incap — incapacitated fraction, amber (still on field but disabled)
+       Missing portion = destroyed losses. */
     #stats .bar {
       height: 4px; background: rgba(255,255,255,0.07);
       border-radius: 2px; overflow: hidden;
       margin: 2px 0 5px;
+      display: flex;
     }
     #stats .bar.sub  { height: 3px; margin: 1px 0 3px 12px; opacity: 0.85; }
-    #stats .bar-fill { height: 100%; width: 100%; border-radius: 2px;
-      transition: width 0.35s ease; }
-    #stats .bar.team-blue .bar-fill { background: var(--blue); }
-    #stats .bar.team-red  .bar-fill { background: var(--red); }
-    #stats .bar.depleted .bar-fill  { background: #5a2a2a; }
+    #stats .bar-fill { height: 100%; transition: width 0.35s ease; }
+    #stats .bar.team-blue .bar-fill.op { background: var(--blue); }
+    #stats .bar.team-red  .bar-fill.op { background: var(--red); }
+    #stats .bar-fill.incap { background: #f29e3c; opacity: 0.9; }
+    #stats .bar.depleted .bar-fill.op { background: #5a2a2a; }
 
     #controls {
       position:absolute; left:50%; transform:translateX(-50%); bottom:18px;
@@ -119,6 +124,7 @@
       <option value="1" selected>1×</option>
       <option value="2">2×</option>
       <option value="4">4×</option>
+      <option value="8">8×</option>
     </select>
   </div>
 
