@@ -1,0 +1,28 @@
+{
+  "_comment": "Vector overlays drawn on top of the DEM heightmap. Coordinates are world-space (x, z) in meters. The DEM (data/terrain.dem) carries the actual ground elevation; the trench polylines below are also dipped into the DEM by scripts/dump_dem.mjs so the visual depression matches.",
+  "roads": [
+    {
+      "name": "main_road",
+      "points": [[0, -55], [0, -10], [2, -2], [2, 6], [0, 22], [0, 55]],
+      "width": 4
+    }
+  ],
+  "rivers": [
+    {
+      "name": "river",
+      "points": [[-58, -1], [-30, 0], [-15, 1.5], [-3, 2.5], [3, 2.5], [15, 1], [30, -0.5], [58, -2]],
+      "width": 7
+    }
+  ],
+  "buildings": [
+    { "x": -36, "z": 26, "w": 7, "d": 7, "h": 5, "yaw": 0.2 },
+    { "x": -42, "z": 33, "w": 5, "d": 6, "h": 4, "yaw": -0.4 },
+    { "x":  35, "z": 30, "w": 8, "d": 6, "h": 6, "yaw": 0.0 },
+    { "x":  42, "z": 22, "w": 5, "d": 5, "h": 4, "yaw": 0.3 },
+    { "x":   0, "z": -48, "w": 6, "d": 5, "h": 4, "yaw": 0.1 }
+  ],
+  "trenches": [
+    { "name": "red_left_trench",  "points": [[-18, 18], [-3, 18]], "width": 1.6, "depth": 2.5 },
+    { "name": "red_right_trench", "points": [[3, 22], [20, 22]],   "width": 1.6, "depth": 2.5 }
+  ]
+}

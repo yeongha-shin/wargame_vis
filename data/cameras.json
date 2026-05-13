@@ -1,0 +1,7 @@
+[
+  { "t": 0,  "mode": "static", "position": [-35, 110, 35], "target": [0, 0, 0] },
+  { "t": 7, "mode": "pov",    "agent": "red_drn_1" },
+  { "t": 15, "mode": "pov",    "agent": "blue_drn_1" },
+  { "t": 23, "mode": "pov",    "agent": "blue_art_6", "back": 13, "up": 5 },
+  { "t": 30, "mode": "static", "position": [-35, 110, 35], "target": [0, 0, 0] }
+]

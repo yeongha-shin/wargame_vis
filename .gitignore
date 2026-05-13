@@ -1,0 +1,20 @@
+# Large data artifacts — tracked outside git
+data_raw/
+data_processed/
+outputs/
+cache/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Node
+node_modules/
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
+*.swp

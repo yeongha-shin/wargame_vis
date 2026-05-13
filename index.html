@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Wargame 3D Replay — Demo</title>
+  <style>
+    :root {
+      --blue: #4ea0ff;
+      --red:  #ff5b5b;
+      --bg:   #0b1116;
+      --panel: rgba(15, 22, 30, 0.78);
+      --text: #e6edf3;
+      --muted: #8b9aa8;
+      --accent: #ffd166;
+    }
+    html, body { margin:0; padding:0; height:100%; background:var(--bg); color:var(--text);
+      font-family: -apple-system, "Segoe UI", Roboto, "Noto Sans KR", sans-serif; overflow:hidden; }
+    #app { position:fixed; inset:0; }
+    canvas { display:block; }
+
+    .panel {
+      position:absolute; background:var(--panel); backdrop-filter: blur(8px);
+      border:1px solid #1f2a36; border-radius:10px; padding:12px 14px;
+      box-shadow: 0 6px 20px rgba(0,0,0,0.35);
+    }
+    #stats   { top:14px; right:14px; min-width:200px; font-variant-numeric: tabular-nums; }
+    #help    { bottom:90px; right:14px; max-width:240px; font-size:12px; color:var(--muted); }
+    #viewer-label {
+      position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+      font-size: 32px; font-weight: 700; letter-spacing: 1.5px;
+      color: var(--text); text-shadow: 0 2px 10px rgba(0, 0, 0, 0.75), 0 0 4px rgba(0,0,0,0.6);
+      pointer-events: none; user-select: none; opacity: 0; transition: opacity 0.25s ease;
+      text-align: center; white-space: nowrap;
+    }
+    #viewer-label.visible { opacity: 0.92; }
+    #viewer-label.blue { color: var(--blue); }
+    #viewer-label.red  { color: var(--red); }
+
+
+    #stats .row { display:flex; justify-content:space-between; font-size:12px; padding:2px 0; }
+    #stats .label { color: var(--muted); }
+    #stats .row.team-head { margin-top:8px; padding-top:6px; border-top:1px solid #1f2a36; font-weight:600; font-size:13px; }
+    #stats .row.team-head.team-blue .team-name { color: var(--blue); }
+    #stats .row.team-head.team-red  .team-name { color: var(--red); }
+    #stats .row.sub { padding:1px 0 1px 12px; font-size:11px; }
+    #stats .alive { color: var(--text); }
+    #stats .row.sub .alive { color: var(--text); }
+    #stats .total { color: var(--muted); }
+    #stats .lost  { color: var(--red); margin-left:6px; font-size:11px; }
+    #stats .lost.zero { display:none; }
+    #stats .row.sub.depleted .alive { color: var(--red); }
+
+    /* Strength bars under each stats row */
+    #stats .bar {
+      height: 4px; background: rgba(255,255,255,0.07);
+      border-radius: 2px; overflow: hidden;
+      margin: 2px 0 5px;
+    }
+    #stats .bar.sub  { height: 3px; margin: 1px 0 3px 12px; opacity: 0.85; }
+    #stats .bar-fill { height: 100%; width: 100%; border-radius: 2px;
+      transition: width 0.35s ease; }
+    #stats .bar.team-blue .bar-fill { background: var(--blue); }
+    #stats .bar.team-red  .bar-fill { background: var(--red); }
+    #stats .bar.depleted .bar-fill  { background: #5a2a2a; }
+
+    #controls {
+      position:absolute; left:50%; transform:translateX(-50%); bottom:18px;
+      display:flex; align-items:center; gap:10px; padding:10px 14px;
+      background:var(--panel); border:1px solid #1f2a36; border-radius:12px;
+      backdrop-filter: blur(8px); width: min(820px, 92vw);
+    }
+    #controls button {
+      background:#172230; color:var(--text); border:1px solid #2a3a4d;
+      padding:6px 12px; border-radius:8px; cursor:pointer; font-size:13px;
+    }
+    #controls button:hover { background:#1e2c3d; }
+    #controls button.primary { background:var(--accent); color:#1a1300; border-color:transparent; font-weight:600; }
+    #scrub { flex:1; }
+    #time  { font-variant-numeric: tabular-nums; font-size:12px; color:var(--muted); min-width:90px; text-align:right; }
+    #speed { background:#172230; color:var(--text); border:1px solid #2a3a4d; padding:5px 8px; border-radius:8px; }
+
+    /* Slider styling */
+    input[type=range] { -webkit-appearance:none; appearance:none; height:4px; background:#243446; border-radius:4px; }
+    input[type=range]::-webkit-slider-thumb {
+      -webkit-appearance:none; width:14px; height:14px; background:var(--accent);
+      border-radius:50%; cursor:pointer; border:2px solid #1a1300;
+    }
+    input[type=range]::-moz-range-thumb {
+      width:14px; height:14px; background:var(--accent); border-radius:50%;
+      cursor:pointer; border:2px solid #1a1300;
+    }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+
+<div id="stats" class="panel">
+    <div class="row"><span class="label">Time</span><span id="stat-time">0.0s / 0.0s</span></div>
+    <div id="stat-breakdown"></div>
+  </div>
+
+  <div id="help" class="panel">
+    <div><b>Mouse</b>: drag rotate · wheel zoom · right-drag pan</div>
+    <div style="margin-top:4px;"><b>Space</b>: play/pause · <b>←/→</b>: ±2s · <b>C</b>: cinema</div>
+  </div>
+
+  <div id="viewer-label"></div>
+
+  <div id="controls">
+    <button id="btn-play" class="primary">▶ Play</button>
+    <button id="btn-restart">⟲</button>
+    <button id="btn-cinema">📽 Cinema: ON</button>
+    <button id="btn-sound">🔊 Sound: ON</button>
+    <input id="scrub" type="range" min="0" max="1000" value="0" step="1" />
+    <span id="time">0.0s / 0.0s</span>
+    <select id="speed">
+      <option value="0.5">0.5×</option>
+      <option value="1" selected>1×</option>
+      <option value="2">2×</option>
+      <option value="4">4×</option>
+    </select>
+  </div>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>
