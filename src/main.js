@@ -30,10 +30,17 @@ const HEIGHT_SCALE = 6.0;     // max world-Y displacement (slope luminance ∈ [
 const PLANE_SEGMENTS = 200;   // mesh density
 
 // Drone reconnaissance footprint. The disc of ground within this radius of a
-// drone's *current* (x, z) is marked scouted every frame; coverage is
-// cumulative. Units are recentered/scaled world meters (the scenario is fit
-// to ~100 m across a 120 m plane), so ~8 reads as a believable sensor swath.
+// drone's *current* (x, z) is shaded every frame; the overlay is live (only
+// the current position, not an accumulated trail). Units are recentered/
+// scaled world meters (the scenario is fit to ~100 m across a 120 m plane),
+// so ~8 reads as a believable sensor swath.
 const DETECTION_RADIUS = 8.0;
+
+// Building command-post observation footprint. A translucent cone is drawn
+// from the building's apex (its antenna-mast tip) fanning down to a ground
+// circle of this radius — the static-sensor analogue of a drone's swath. It
+// toggles with the same Detection mode as the drone rings.
+const COMMAND_DETECTION_RADIUS = 14.0;
 
 // ---------- Scene setup ----------
 const app = document.getElementById('app');
@@ -350,14 +357,18 @@ const agents = scenario.agents.map(a => {
 
 const agentsById = new Map(agents.map(a => [a.spec.id, a]));
 
+// Tag each unit's root group so a raycast hit on any child mesh can be
+// walked back up to the owning agent (for the hover tooltip).
+for (const ag of agents) ag.mesh.userData.agentId = ag.spec.id;
+
 // Drone rotor spin animation: collect rotor meshes
 const rotorMeshes = [];
 agents.forEach(a => a.mesh.traverse(o => { if (o.userData?.spin) rotorMeshes.push(o); }));
 
 // Live detection-radius ring for each drone: a thin team-colored outline of
 // the disc currently being scouted, parked on the terrain directly below the
-// drone. Makes the otherwise-invisible sensor footprint legible and shows
-// exactly what the accumulating overlay is painting this frame.
+// drone. Makes the otherwise-invisible sensor footprint legible and outlines
+// exactly what the live overlay is shading this frame.
 const droneScouts = agents
   .filter(a => a.spec.type === 'drone')
   .map(a => {
@@ -376,6 +387,143 @@ const droneScouts = agents
     a.scoutRing = ring;
     return { agent: a, ring };
   });
+
+// Building command-post observation volume: a translucent team-colored cone
+// whose apex sits at the building's highest point and whose base is a circle
+// of COMMAND_DETECTION_RADIUS on the ground. Only command posts rendered as
+// buildings carry userData.observationApexY (set in units.js), so tents are
+// skipped automatically. depthWrite:false + DoubleSide means it never
+// occludes units and that wherever it overlaps the drone's translucent
+// coverage the two simply alpha-blend — the shared region reads denser.
+const cpDomes = agents
+  .filter(a => a.spec.type === 'command_post' &&
+               a.mesh.userData.observationApexY != null)
+  .map(a => {
+    const hex = TEAM_PRIMARY_HEX[a.spec.team] ?? 0xffffff;
+    const apexY = a.mesh.userData.observationApexY;
+    // ConeGeometry: apex at +height/2, base at -height/2. Height = apexY so
+    // that, recentred at ground+apexY/2, the apex lands on the building top
+    // and the base disc rests on the terrain.
+    const cone = new THREE.Mesh(
+      new THREE.ConeGeometry(COMMAND_DETECTION_RADIUS, apexY, 48),
+      new THREE.MeshBasicMaterial({
+        color: hex, transparent: true, opacity: 0.14,
+        side: THREE.DoubleSide, depthWrite: false,
+      }),
+    );
+    cone.renderOrder = 3;
+    cone.castShadow = false;
+    cone.receiveShadow = false;
+    cone.visible = false;
+    cone.userData.apexY = apexY;
+    scene.add(cone);
+    a.cpDome = cone;
+    return { agent: a, cone };
+  });
+
+// ---------- Recon → command intel arrows ----------
+// The cumulative drone-coverage map (kept internally by DetectionOverlay, no
+// longer drawn) feeds this: whenever a team's recon has *ever* swept the spot
+// an enemy self-propelled artillery occupies, that piece is "spotted". A
+// parabolic arrow in the spotting team's color is then arced from that
+// team's own command post down onto the enemy artillery — HQ designating
+// the located threat.
+// Spotting is sticky (intel doesn't expire once gathered) but, like the drone
+// rings, the arrows only render while Detection mode is on.
+const OTHER_TEAM = { red: 'blue', blue: 'red' };
+const TENT_CMD_ANCHOR_Y = 3.6;   // tent CP: roughly the pennant height
+
+const commandByTeam = {};
+for (const ag of agents) {
+  if (ag.spec.type === 'command_post') commandByTeam[ag.spec.team] = ag;
+}
+
+// One reusable parabola+arrowhead per artillery piece, colored for the team
+// whose drones would spot it (the opposing team).
+function makeIntelArrow(hex) {
+  const mat = new THREE.MeshBasicMaterial({
+    color: hex, transparent: true, opacity: 0.6,
+    depthTest: false, depthWrite: false,   // always-legible annotation
+  });
+  const group = new THREE.Group();
+  group.visible = false;
+  const shaft = new THREE.Mesh(new THREE.BufferGeometry(), mat);
+  const head  = new THREE.Mesh(new THREE.ConeGeometry(0.85, 2.0, 16), mat);
+  shaft.renderOrder = head.renderOrder = 6;   // over the translucent overlay/cone
+  group.add(shaft, head);
+  scene.add(group);
+
+  const _s = new THREE.Vector3(), _e = new THREE.Vector3();
+  const _c = new THREE.Vector3(), _tan = new THREE.Vector3();
+  const _up = new THREE.Vector3(0, 1, 0);
+  const HEAD_LEN = 2.0;
+
+  group.userData.update = (sx, sy, sz, ex, ey, ez) => {
+    _s.set(sx, sy, sz);
+    _e.set(ex, ey, ez);
+    const flat = Math.hypot(ex - sx, ez - sz);
+    // Arc apex sits above the higher endpoint; lift grows with the span so
+    // long links bow more, short ones stay tight.
+    const peak = Math.max(sy, ey) + Math.min(30, 7 + flat * 0.45);
+    _c.set((sx + ex) / 2, peak, (sz + ez) / 2);
+    const curve = new THREE.QuadraticBezierCurve3(
+      _s.clone(), _c.clone(), _e.clone());
+    shaft.geometry.dispose();
+    shaft.geometry = new THREE.TubeGeometry(curve, 44, 0.20, 8, false);
+    // Arrowhead: tip exactly on the end point, aligned to the curve's
+    // tangent there (end = the artillery, so it points at the threat).
+    curve.getTangent(1, _tan).normalize();
+    head.quaternion.setFromUnitVectors(_up, _tan);
+    head.position.copy(_e).addScaledVector(_tan, -HEAD_LEN / 2);
+  };
+  return group;
+}
+
+const intelArrows = agents
+  .filter(a => a.spec.type === 'artillery')
+  .map(a => {
+    const spotTeam = OTHER_TEAM[a.spec.team];
+    const hex = TEAM_PRIMARY_HEX[spotTeam] ?? 0xffffff;
+    return { artillery: a, spotTeam, arrow: makeIntelArrow(hex) };
+  });
+
+const spotted = new Set();   // artillery ids whose position recon has ever swept
+
+function resetIntel() {
+  spotted.clear();
+  for (const it of intelArrows) it.arrow.visible = false;
+}
+
+function updateIntel() {
+  const on = !!detection?.enabled;
+  for (const it of intelArrows) {
+    const a = it.artillery;
+    const sa = a.lastSample;
+    const cmd = commandByTeam[it.spotTeam];
+    const alive = sa && sa.status !== 'destroyed';
+
+    // Accumulate intel: once the spotting team's recon has covered this
+    // artillery's spot, it stays spotted (sticky) for the rest of the run.
+    if (alive && detection && detection.seenBy(it.spotTeam, sa.x, sa.z)) {
+      spotted.add(a.spec.id);
+    }
+
+    const show = on && alive && cmd && spotted.has(a.spec.id);
+    it.arrow.visible = !!show;
+    if (!show) continue;
+
+    // Arc starts at the command post's top (building apex if it's a
+    // building, else the tent's pennant height) and points down at the
+    // spotted artillery — HQ flagging the located threat.
+    const ap = a.mesh.position;
+    const cp = cmd.mesh.position;
+    const cmdTop = cmd.mesh.userData.observationApexY ?? TENT_CMD_ANCHOR_Y;
+    it.arrow.userData.update(
+      cp.x, cp.y + cmdTop, cp.z,
+      ap.x, ap.y + 2.4, ap.z,
+    );
+  }
+}
 
 // ---------- Combat effects ----------
 const effects = new EffectsManager({ scene, agentsById, sampleHeight, camera });
@@ -524,6 +672,7 @@ function applyFrame(t) {
   for (const ag of agents) {
     const s = sampleAt(ag.spec.track, t, ag.cursor);
     ag.cursor = s.cursor;
+    ag.lastSample = s;   // consumed by the intel pass after applyFrame
 
     if (s.status !== ag.statusApplied) {
       applyStatusVisuals(ag, s.status);
@@ -538,9 +687,10 @@ function applyFrame(t) {
       ag.mesh.rotation.y = s.yaw;
 
       // Drone reconnaissance: an operational drone scouts the disc of ground
-      // directly beneath it. Paint it into the cumulative overlay and park
-      // the live footprint ring on the terrain below the drone. Incapacitated
-      // drones are still on the field but out of action — they don't scout.
+      // directly beneath it. Shade it in the live overlay (current position
+      // only) and park the footprint ring on the terrain below the drone.
+      // Incapacitated drones are still on the field but out of action — they
+      // don't scout.
       if (ag.scoutRing) {
         const scouting = detection?.enabled && s.status === 'operational';
         if (scouting) {
@@ -548,6 +698,18 @@ function applyFrame(t) {
           ag.scoutRing.position.set(s.x, sampleHeight(s.x, s.z) + 0.12, s.z);
         }
         ag.scoutRing.visible = !!scouting;
+      }
+
+      // Building command post: park its observation cone over the building so
+      // the apex caps the mast tip and the base sits on the terrain. Same
+      // Detection-mode gate as the drone footprint; hidden once destroyed.
+      if (ag.cpDome) {
+        const showing = detection?.enabled && s.status !== 'destroyed';
+        if (showing) {
+          const gy = sampleHeight(s.x, s.z);
+          ag.cpDome.position.set(s.x, gy + ag.cpDome.userData.apexY / 2 + 0.12, s.z);
+        }
+        ag.cpDome.visible = !!showing;
       }
 
       const turret = ag.mesh.userData.turret;
@@ -609,6 +771,7 @@ function applyFrame(t) {
       ag.mesh.visible = false;
       if (ag.damage) ag.damage.setVisible(false);
       if (ag.scoutRing) ag.scoutRing.visible = false;
+      if (ag.cpDome) ag.cpDome.visible = false;
       // Team-colored ring stays at the death site alongside the wreckage.
       if (ag.deathPos) {
         const dp = ag.deathPos;
@@ -728,6 +891,7 @@ $restart.addEventListener('click', () => {
   unlockAudio();
   currentTime = 0;
   detection?.clear();   // fresh replay starts with a blank recon map
+  resetIntel();         // and no carried-over spotted-artillery arrows
   setPlaying(true);
 });
 $speed.addEventListener('change', e => { speed = parseFloat(e.target.value); });
@@ -770,6 +934,185 @@ window.addEventListener('keydown', e => {
   else if (e.code === 'KeyD')       { if (detection) detection.setEnabled(!detection.isEnabled()); refreshDetectButton(); }
 });
 
+// ---------- Hover tooltip ----------
+// Raycast the cursor against the unit meshes; on a hit, walk up to the
+// owning agent and show its team / type / id in a panel that follows the
+// pointer. Destroyed units have mesh.visible=false (the raycaster still
+// traverses them), so the root's visibility is checked explicitly.
+const $hoverTip = document.getElementById('hover-tip');
+const raycaster = new THREE.Raycaster();
+const pointerNdc = new THREE.Vector2();
+const pickables = agents.map(a => a.mesh);
+
+function agentFromObject(obj) {
+  while (obj) {
+    const id = obj.userData && obj.userData.agentId;
+    if (id != null) return agentsById.get(id);
+    obj = obj.parent;
+  }
+  return null;
+}
+
+function hideHoverTip() {
+  $hoverTip.classList.remove('visible');
+}
+
+// Shared picker: screen point → topmost *visible* agent (or null). Destroyed
+// units keep mesh.visible=false but the raycaster still traverses them, so
+// visibility is checked explicitly.
+function pickAgentAt(clientX, clientY) {
+  pointerNdc.x =  (clientX / window.innerWidth)  * 2 - 1;
+  pointerNdc.y = -(clientY / window.innerHeight) * 2 + 1;
+  raycaster.setFromCamera(pointerNdc, camera);
+  const hits = raycaster.intersectObjects(pickables, true);
+  for (const h of hits) {
+    const cand = agentFromObject(h.object);
+    if (cand && cand.mesh.visible) return cand;
+  }
+  return null;
+}
+
+renderer.domElement.addEventListener('pointermove', e => {
+  const ag = pickAgentAt(e.clientX, e.clientY);
+  if (!ag) { hideHoverTip(); return; }
+
+  const team = ag.spec.team;
+  const typeLabel = TYPE_LABELS[ag.spec.type] ?? ag.spec.type;
+  $hoverTip.innerHTML =
+    `<div class="tip-team ${team}">${team.toUpperCase()}</div>` +
+    `<div><span class="tip-k">Agent</span><span class="tip-v">${typeLabel}</span></div>` +
+    `<div><span class="tip-k">ID</span><span class="tip-v">${ag.spec.id}</span></div>`;
+  $hoverTip.classList.add('visible');
+
+  // Offset from the cursor, flipped near the right/bottom edges so the
+  // panel never spills off-screen. Measured while visible for a real size.
+  const pad = 14;
+  const r = $hoverTip.getBoundingClientRect();
+  let x = e.clientX + pad;
+  let y = e.clientY + pad;
+  if (x + r.width  > window.innerWidth)  x = e.clientX - pad - r.width;
+  if (y + r.height > window.innerHeight) y = e.clientY - pad - r.height;
+  $hoverTip.style.left = `${x}px`;
+  $hoverTip.style.top  = `${y}px`;
+});
+renderer.domElement.addEventListener('pointerleave', hideHoverTip);
+
+// ---------- Click-to-inspect panel ----------
+// Clicking a unit pins a top-left card: agent type, team, id, the live
+// 3-state status, and a slowly-spinning 3D model of that unit rendered in
+// its own little WebGL view (a fresh createUnit instance, independent of
+// the battlefield one so it isn't affected by status darkening/hiding).
+const $inspector  = document.getElementById('inspector');
+const $inspClose  = document.getElementById('insp-close');
+const $inspCanvas = document.getElementById('insp-canvas');
+const $inspType   = document.getElementById('insp-type');
+const $inspTeam   = document.getElementById('insp-team');
+const $inspId     = document.getElementById('insp-id');
+const $inspStatus = document.getElementById('insp-status');
+const $inspDot    = document.getElementById('insp-dot');
+
+const STATUS_LABELS = {
+  operational:   'Operational',
+  incapacitated: 'Incapacitated',
+  destroyed:     'Destroyed',
+};
+
+const PREV_W = 184, PREV_H = 170;
+const previewRenderer = new THREE.WebGLRenderer({
+  canvas: $inspCanvas, antialias: true, alpha: true,
+});
+previewRenderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+previewRenderer.setSize(PREV_W, PREV_H, false);
+previewRenderer.outputColorSpace = THREE.SRGBColorSpace;
+previewRenderer.toneMapping = THREE.ACESFilmicToneMapping;
+previewRenderer.toneMappingExposure = 1.0;
+
+const previewScene  = new THREE.Scene();
+const previewCamera = new THREE.PerspectiveCamera(45, PREV_W / PREV_H, 0.05, 500);
+previewScene.add(new THREE.AmbientLight(0xffffff, 0.65));
+const previewDir = new THREE.DirectionalLight(0xffffff, 1.15);
+previewDir.position.set(4, 6, 5);
+previewScene.add(previewDir);
+const previewHolder = new THREE.Group();
+previewScene.add(previewHolder);
+
+let selectedAgent = null;
+let previewModel = null;
+let _lastStatusShown = null;
+
+function clearPreviewModel() {
+  if (!previewModel) return;
+  previewHolder.remove(previewModel);
+  // Dispose geometries only — materials/camo textures are cached and shared
+  // with the live battlefield units, so disposing them would corrupt those.
+  previewModel.traverse(o => { if (o.isMesh) o.geometry.dispose(); });
+  previewModel = null;
+}
+
+function selectAgent(ag) {
+  selectedAgent = ag;
+  $inspType.textContent = TYPE_LABELS[ag.spec.type] ?? ag.spec.type;
+  $inspTeam.textContent = ag.spec.team.toUpperCase();
+  $inspTeam.className = `insp-v team-${ag.spec.team}`;
+  $inspId.textContent = ag.spec.id;
+  _lastStatusShown = null;   // force a status redraw next frame
+
+  clearPreviewModel();
+  previewModel = createUnit(ag.spec.type, ag.spec.team);
+  previewHolder.add(previewModel);
+  // Recenter on the model's bounding box so it spins about its own middle,
+  // then back the camera off to frame the largest dimension.
+  const box = new THREE.Box3().setFromObject(previewModel);
+  const size = box.getSize(new THREE.Vector3());
+  const center = box.getCenter(new THREE.Vector3());
+  previewModel.position.sub(center);
+  previewHolder.rotation.y = 0;
+  const maxDim = Math.max(size.x, size.y, size.z) || 1;
+  const dist = (maxDim / 2) / Math.tan((previewCamera.fov * Math.PI / 180) / 2) * 1.7;
+  previewCamera.position.set(dist * 0.65, dist * 0.5, dist * 0.95);
+  previewCamera.near = Math.max(0.01, dist / 100);
+  previewCamera.far  = dist * 12;
+  previewCamera.updateProjectionMatrix();
+  previewCamera.lookAt(0, 0, 0);
+
+  $inspector.classList.add('visible');
+}
+
+function closeInspector() {
+  selectedAgent = null;
+  clearPreviewModel();
+  $inspector.classList.remove('visible');
+}
+
+// Refresh the live status line and spin/redraw the preview. Cheap no-op
+// while nothing is selected.
+function renderInspector(dt) {
+  if (!selectedAgent) return;
+  const st = selectedAgent.lastSample?.status
+           ?? selectedAgent.statusApplied ?? 'operational';
+  if (st !== _lastStatusShown) {
+    _lastStatusShown = st;
+    $inspStatus.textContent = STATUS_LABELS[st] ?? st;
+    $inspDot.className = `dot ${st}`;
+  }
+  previewHolder.rotation.y += dt * 0.6;
+  previewRenderer.render(previewScene, previewCamera);
+}
+
+$inspClose.addEventListener('click', closeInspector);
+
+// Distinguish a click from an orbit drag: only select if the pointer
+// barely moved between press and release.
+let _downX = 0, _downY = 0;
+renderer.domElement.addEventListener('pointerdown', e => {
+  _downX = e.clientX; _downY = e.clientY;
+});
+renderer.domElement.addEventListener('click', e => {
+  if (Math.hypot(e.clientX - _downX, e.clientY - _downY) > 6) return;
+  const ag = pickAgentAt(e.clientX, e.clientY);
+  if (ag) selectAgent(ag);
+});
+
 // ---------- Animation loop ----------
 const clock = new THREE.Clock();
 function tick() {
@@ -783,9 +1126,11 @@ function tick() {
     }
   }
 
+  detection?.beginFrame();   // wipe last frame's disc — overlay is live, not cumulative
   const stats = applyFrame(currentTime);
   effects.update(currentTime);
   detection?.flush();
+  updateIntel();   // recon→command arrows (uses this frame's coverage + positions)
 
   // spin drone rotors
   for (const r of rotorMeshes) r.rotation.y += dt * 40;
@@ -842,6 +1187,7 @@ function tick() {
     controls.update();
   }
   renderer.render(scene, camera);
+  renderInspector(dt);
   requestAnimationFrame(tick);
 }
 tick();

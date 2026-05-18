@@ -5,6 +5,14 @@ const TEAM_COLORS = {
   red:  { primary: 0xff5b5b, dark: 0x7a2727, accent: 0xffc1c1 },
 };
 
+// ─── COMMAND-POST SHAPE CONFIG ──────────────────────────────────────────
+// Line 1 — pick the command silhouette: 'tent' (low sandbag CP) or 'building'
+//          (tall multi-storey HQ block).
+const COMMAND_POST_SHAPE = 'building';
+// Line 2 — which team(s) use that shape; everyone else stays a tent.
+//          e.g. ['red'], ['blue'], or ['red', 'blue'] for both.
+const COMMAND_POST_BUILDING_TEAMS = ['red'];
+
 const mat = (color, opts = {}) =>
   new THREE.MeshStandardMaterial({ color, roughness: 0.7, metalness: 0.15, ...opts });
 
@@ -845,7 +853,7 @@ function makeAntitank(team) {
   return g;
 }
 
-function makeCommandPost(team) {
+function makeCommandPostTent(team) {
   const c = TEAM_COLORS[team];
   const g = new THREE.Group();
 
@@ -873,6 +881,129 @@ function makeCommandPost(team) {
   g.add(flag);
 
   return g;
+}
+
+// Tall reinforced-HQ silhouette: a 3-storey concrete block with a team-coloured
+// identification band, glass windows, a parapet roof with rooftop clutter, and
+// the same antenna-mast + pennant the tent uses so the team still reads at range.
+function makeCommandPostBuilding(team) {
+  const c = TEAM_COLORS[team];
+  const g = new THREE.Group();
+
+  const M = {
+    wall:   mat(0x9a9387, { roughness: 0.92, metalness: 0.04 }),  // concrete
+    wallDk: mat(0x6f6a60, { roughness: 0.95 }),                   // base / pilasters
+    band:   mat(c.primary, { roughness: 0.6, metalness: 0.2 }),   // team ID band
+    accent: mat(c.accent),
+    glass:  mat(0x1c2630, {
+      metalness: 0.5, roughness: 0.15,
+      emissive: 0x10202c, emissiveIntensity: 0.4,
+    }),
+    roof:   mat(c.dark, { roughness: 0.85 }),
+    sand:   mat(0x6b5a3a, { roughness: 0.95 }),
+    metal:  mat(0x2c2c2c, { metalness: 0.5, roughness: 0.45 }),
+    dark:   mat(0x111111),
+  };
+  const add = (parent, geo, key, pos = [0, 0, 0], rot = [0, 0, 0]) => {
+    const m = new THREE.Mesh(geo, M[key]);
+    m.position.set(pos[0], pos[1], pos[2]);
+    m.rotation.set(rot[0], rot[1], rot[2]);
+    parent.add(m);
+    return m;
+  };
+
+  const W = 4.4, D = 4.0;          // footprint
+  const FLOORS = 3, FH = 2.2;      // 3 storeys, 2.2 m each
+  const H = FLOORS * FH;           // ~6.6 m tower (vs ~2.7 m tent)
+
+  // ─── SANDBAG BLAST RING (keeps the tent CP's fortified look) ──────────
+  add(g, new THREE.CylinderGeometry(3.0, 3.2, 0.5, 20), 'sand', [0, 0.25, 0]);
+
+  // ─── MAIN TOWER + PLINTH + CORNER PILASTERS ───────────────────────────
+  add(g, new THREE.BoxGeometry(W, H, D), 'wall', [0, 0.5 + H / 2, 0]);
+  add(g, new THREE.BoxGeometry(W + 0.2, 0.6, D + 0.2), 'wallDk', [0, 0.8, 0]);
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+    add(g, new THREE.BoxGeometry(0.35, H, 0.35), 'wallDk',
+        [sx * (W / 2 - 0.05), 0.5 + H / 2, sz * (D / 2 - 0.05)]);
+  }
+
+  // ─── WINDOW GRID (front, back, both sides — one row per floor) ────────
+  const floorY0 = 0.5 + FH * 0.55;
+  for (let f = 0; f < FLOORS; f++) {
+    const y = floorY0 + f * FH;
+    for (const sz of [1, -1]) {
+      for (let i = -1; i <= 1; i++) {
+        add(g, new THREE.BoxGeometry(0.8, 1.0, 0.08), 'glass',
+            [i * 1.2, y, sz * (D / 2 + 0.02)]);
+      }
+    }
+    for (const sx of [1, -1]) {
+      for (let i = -1; i <= 1; i++) {
+        add(g, new THREE.BoxGeometry(0.08, 1.0, 0.8), 'glass',
+            [sx * (W / 2 + 0.02), y, i * 1.1]);
+      }
+    }
+  }
+
+  // ─── TEAM IDENTIFICATION BAND (wraps just under the roofline) ─────────
+  add(g, new THREE.BoxGeometry(W + 0.1, 0.45, D + 0.1), 'band',
+      [0, 0.5 + H - 0.35, 0]);
+
+  // ─── FLAT ROOF + PARAPET ──────────────────────────────────────────────
+  const roofY = 0.5 + H;
+  add(g, new THREE.BoxGeometry(W + 0.25, 0.18, D + 0.25), 'roof',
+      [0, roofY + 0.09, 0]);
+  for (const [w, d, px, pz] of [
+    [W + 0.25, 0.35, 0,  D / 2 + 0.05], [W + 0.25, 0.35, 0, -(D / 2 + 0.05)],
+    [0.35, D + 0.25,  W / 2 + 0.05, 0], [0.35, D + 0.25, -(W / 2 + 0.05), 0],
+  ]) {
+    add(g, new THREE.BoxGeometry(w, 0.35, d), 'roof', [px, roofY + 0.27, pz]);
+  }
+
+  // ─── ROOFTOP CLUTTER: HVAC block + satellite dish ─────────────────────
+  add(g, new THREE.BoxGeometry(1.2, 0.6, 0.9), 'metal',
+      [-0.9, roofY + 0.45, -0.7]);
+  const dish = new THREE.Mesh(
+    new THREE.SphereGeometry(0.55, 14, 10, 0, Math.PI * 2, 0, Math.PI / 2.4),
+    M.metal);
+  dish.position.set(0.9, roofY + 0.7, 0.7);
+  dish.rotation.set(-Math.PI / 3, 0, 0.4);
+  g.add(dish);
+  add(g, new THREE.CylinderGeometry(0.04, 0.04, 0.5, 8), 'dark',
+      [0.9, roofY + 0.4, 0.7]);
+
+  // ─── ENTRANCE (front +Z): door + canopy + flanking sandbags ───────────
+  add(g, new THREE.BoxGeometry(1.1, 1.9, 0.12), 'dark',
+      [0, 0.5 + 0.95, D / 2 + 0.04]);
+  add(g, new THREE.BoxGeometry(1.6, 0.12, 0.9), 'wallDk',
+      [0, 0.5 + 2.0, D / 2 + 0.45]);
+  for (const sx of [-1, 1]) {
+    add(g, new THREE.BoxGeometry(0.5, 0.5, 0.6), 'sand',
+        [sx * 0.95, 0.75, D / 2 + 0.35]);
+  }
+
+  // ─── ANTENNA MAST + TEAM PENNANT (same cue as the tent CP) ────────────
+  const mast = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.05, 0.05, 3.4, 8), M.metal);
+  mast.position.set(W / 2 - 0.4, roofY + 1.7, -(D / 2 - 0.4));
+  g.add(mast);
+  add(g, new THREE.BoxGeometry(0.7, 0.45, 0.02), 'accent',
+      [W / 2 - 0.4 + 0.37, roofY + 3.1, -(D / 2 - 0.4)]);
+
+  // Highest structural point (antenna-mast tip). Read by main.js to anchor
+  // the apex of the building's translucent observation cone.
+  g.userData.observationApexY = roofY + 3.4;
+
+  return g;
+}
+
+// Dispatcher: a team gets the building when the shape is set to 'building'
+// AND that team is listed in COMMAND_POST_BUILDING_TEAMS; otherwise the tent.
+function makeCommandPost(team) {
+  const asBuilding =
+    COMMAND_POST_SHAPE === 'building' &&
+    COMMAND_POST_BUILDING_TEAMS.includes(team);
+  return asBuilding ? makeCommandPostBuilding(team) : makeCommandPostTent(team);
 }
 
 const FACTORIES = {

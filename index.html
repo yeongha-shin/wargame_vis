@@ -37,6 +37,50 @@
     #viewer-label.blue { color: var(--blue); }
     #viewer-label.red  { color: var(--red); }
 
+    #hover-tip {
+      position: fixed; pointer-events: none; z-index: 30;
+      padding: 7px 10px; font-size: 12px; line-height: 1.5;
+      display: none; white-space: nowrap;
+    }
+    #hover-tip.visible { display: block; }
+    #hover-tip .tip-team { font-weight: 700; letter-spacing: 0.5px; }
+    #hover-tip .tip-team.blue { color: var(--blue); }
+    #hover-tip .tip-team.red  { color: var(--red); }
+    #hover-tip .tip-k { color: var(--muted); margin-right: 6px; }
+    #hover-tip .tip-v { color: var(--text); }
+
+    #inspector { top:14px; left:14px; width:210px; display:none; }
+    #inspector.visible { display:block; }
+    #inspector .insp-head {
+      display:flex; justify-content:space-between; align-items:center;
+      margin-bottom:8px;
+    }
+    #inspector .insp-title { font-size:13px; font-weight:600; }
+    #inspector .insp-close {
+      cursor:pointer; color:var(--muted); font-size:13px; line-height:1;
+      padding:2px 5px; border-radius:6px;
+    }
+    #inspector .insp-close:hover { color:var(--text); background:#1e2c3d; }
+    #inspector .insp-preview {
+      width:100%; height:170px; margin-bottom:8px; border-radius:8px;
+      overflow:hidden; background:rgba(0,0,0,0.28);
+    }
+    #inspector .insp-preview canvas { display:block; width:100%; height:100%; }
+    #inspector .insp-row {
+      display:flex; justify-content:space-between; font-size:12px; padding:3px 0;
+    }
+    #inspector .insp-k { color:var(--muted); }
+    #inspector .insp-v { color:var(--text); }
+    #inspector .insp-v.team-blue { color:var(--blue); font-weight:600; }
+    #inspector .insp-v.team-red  { color:var(--red);  font-weight:600; }
+    #inspector .insp-status { display:flex; align-items:center; gap:6px; }
+    #inspector .dot {
+      width:8px; height:8px; border-radius:50%; background:#8b9aa8;
+    }
+    #inspector .dot.operational   { background:#52d273; }
+    #inspector .dot.incapacitated { background:#f29e3c; }
+    #inspector .dot.destroyed     { background:var(--red); }
+
 
     #stats .row { display:flex; justify-content:space-between; font-size:12px; padding:2px 0; }
     #stats .label { color: var(--muted); }
@@ -111,6 +155,24 @@
   </div>
 
   <div id="viewer-label"></div>
+
+  <div id="hover-tip" class="panel"></div>
+
+  <div id="inspector" class="panel">
+    <div class="insp-head">
+      <span class="insp-title">Unit</span>
+      <span class="insp-close" id="insp-close" title="Close">✕</span>
+    </div>
+    <div class="insp-preview"><canvas id="insp-canvas"></canvas></div>
+    <div class="insp-row"><span class="insp-k">Agent</span><span class="insp-v" id="insp-type">—</span></div>
+    <div class="insp-row"><span class="insp-k">Team</span><span class="insp-v" id="insp-team">—</span></div>
+    <div class="insp-row"><span class="insp-k">ID</span><span class="insp-v" id="insp-id">—</span></div>
+    <div class="insp-row"><span class="insp-k">Status</span>
+      <span class="insp-v insp-status">
+        <span class="dot" id="insp-dot"></span><span id="insp-status">—</span>
+      </span>
+    </div>
+  </div>
 
   <div id="controls">
     <button id="btn-play" class="primary">▶ Play</button>
