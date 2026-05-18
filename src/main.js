@@ -4,6 +4,7 @@ import { createUnit } from './units.js';
 import { loadScenarioFromCsv } from './csvLoader.js';
 import { CinematicDirector, loadCameraSchedule } from './cinematic.js';
 import { EffectsManager, attachDamageEffect, createStatusRing } from './effects.js';
+import { DetectionOverlay } from './detection.js';
 
 const TEAM_PRIMARY_HEX = { blue: 0x4ea0ff, red: 0xff5b5b };
 const INCAP_RING_HEX   = 0xffd166;
@@ -27,6 +28,12 @@ const HEIGHT_GRID_URL = './data/vuhledar_height_grid.png';
 const PLANE_SIZE = 120;
 const HEIGHT_SCALE = 6.0;     // max world-Y displacement (slope luminance ∈ [0, 1])
 const PLANE_SEGMENTS = 200;   // mesh density
+
+// Drone reconnaissance footprint. The disc of ground within this radius of a
+// drone's *current* (x, z) is marked scouted every frame; coverage is
+// cumulative. Units are recentered/scaled world meters (the scenario is fit
+// to ~100 m across a 120 m plane), so ~8 reads as a believable sensor swath.
+const DETECTION_RADIUS = 8.0;
 
 // ---------- Scene setup ----------
 const app = document.getElementById('app');
@@ -127,6 +134,7 @@ async function start() {
 // dump script also pre-smooths it to anti-alias against the heavy 31 km → 120 m
 // horizontal compression before per-vertex bilinear sampling.
 let sampleHeight = () => 0;
+let detection = null;
 try {
   const [colorTex, heightGrid] = await Promise.all([
     loadTextureAsync(TERRAIN_TEXTURE_URL),
@@ -153,6 +161,10 @@ try {
   ground.receiveShadow = true;
   ground.name = 'terrain.ground';
   scene.add(ground);
+
+  // Accumulating drone-recon overlay rides a clone of this exact displaced
+  // geometry, so scouted ground hugs the terrain instead of floating flat.
+  detection = new DetectionOverlay({ scene, geometry: geo, planeSize: PLANE_SIZE });
 
   // World (x, z) → UV with the same convention as the plane:
   //   UV(0, 0) sits at the world NW corner (x=-60, z=+60).
@@ -342,6 +354,29 @@ const agentsById = new Map(agents.map(a => [a.spec.id, a]));
 const rotorMeshes = [];
 agents.forEach(a => a.mesh.traverse(o => { if (o.userData?.spin) rotorMeshes.push(o); }));
 
+// Live detection-radius ring for each drone: a thin team-colored outline of
+// the disc currently being scouted, parked on the terrain directly below the
+// drone. Makes the otherwise-invisible sensor footprint legible and shows
+// exactly what the accumulating overlay is painting this frame.
+const droneScouts = agents
+  .filter(a => a.spec.type === 'drone')
+  .map(a => {
+    const hex = TEAM_PRIMARY_HEX[a.spec.team] ?? 0xffffff;
+    const ring = new THREE.Mesh(
+      new THREE.RingGeometry(DETECTION_RADIUS - 0.5, DETECTION_RADIUS, 64),
+      new THREE.MeshBasicMaterial({
+        color: hex, transparent: true, opacity: 0.55,
+        side: THREE.DoubleSide, depthWrite: false,
+      }),
+    );
+    ring.rotation.x = -Math.PI / 2;
+    ring.renderOrder = 3;
+    ring.visible = false;
+    scene.add(ring);
+    a.scoutRing = ring;
+    return { agent: a, ring };
+  });
+
 // ---------- Combat effects ----------
 const effects = new EffectsManager({ scene, agentsById, sampleHeight, camera });
 effects.setEvents(scenario.events ?? []);
@@ -502,6 +537,19 @@ function applyFrame(t) {
       ag.mesh.position.set(s.x, sampleHeight(s.x, s.z) + s.y, s.z);
       ag.mesh.rotation.y = s.yaw;
 
+      // Drone reconnaissance: an operational drone scouts the disc of ground
+      // directly beneath it. Paint it into the cumulative overlay and park
+      // the live footprint ring on the terrain below the drone. Incapacitated
+      // drones are still on the field but out of action — they don't scout.
+      if (ag.scoutRing) {
+        const scouting = detection?.enabled && s.status === 'operational';
+        if (scouting) {
+          detection.stamp(ag.spec.team, s.x, s.z, DETECTION_RADIUS);
+          ag.scoutRing.position.set(s.x, sampleHeight(s.x, s.z) + 0.12, s.z);
+        }
+        ag.scoutRing.visible = !!scouting;
+      }
+
       const turret = ag.mesh.userData.turret;
       // Incapacitated units stop aiming — they're still on the field but
       // out of action. Only operational units track targets.
@@ -560,6 +608,7 @@ function applyFrame(t) {
     } else {
       ag.mesh.visible = false;
       if (ag.damage) ag.damage.setVisible(false);
+      if (ag.scoutRing) ag.scoutRing.visible = false;
       // Team-colored ring stays at the death site alongside the wreckage.
       if (ag.deathPos) {
         const dp = ag.deathPos;
@@ -675,7 +724,12 @@ function setPlaying(v) {
 }
 
 $play.addEventListener('click', () => { unlockAudio(); setPlaying(!playing); });
-$restart.addEventListener('click', () => { unlockAudio(); currentTime = 0; setPlaying(true); });
+$restart.addEventListener('click', () => {
+  unlockAudio();
+  currentTime = 0;
+  detection?.clear();   // fresh replay starts with a blank recon map
+  setPlaying(true);
+});
 $speed.addEventListener('change', e => { speed = parseFloat(e.target.value); });
 
 const $btnSound = document.getElementById('btn-sound');
@@ -690,6 +744,17 @@ $btnSound.addEventListener('click', () => {
   refreshSoundButton();
 });
 
+const $btnDetect = document.getElementById('btn-detect');
+function refreshDetectButton() {
+  const on = detection ? detection.isEnabled() : false;
+  $btnDetect.textContent = on ? '🛰 Detection: ON' : '🛰 Detection: OFF';
+}
+refreshDetectButton();
+$btnDetect.addEventListener('click', () => {
+  if (detection) detection.setEnabled(!detection.isEnabled());
+  refreshDetectButton();
+});
+
 $scrub.addEventListener('input', e => {
   scrubbing = true;
   currentTime = (parseFloat(e.target.value) / 1000) * scenario.duration;
@@ -702,6 +767,7 @@ window.addEventListener('keydown', e => {
   else if (e.code === 'ArrowLeft')  { currentTime = Math.max(0, currentTime - 2); }
   else if (e.code === 'ArrowRight') { currentTime = Math.min(scenario.duration, currentTime + 2); }
   else if (e.code === 'KeyC')       { director.setEnabled(!director.enabled); refreshCinemaButton(); }
+  else if (e.code === 'KeyD')       { if (detection) detection.setEnabled(!detection.isEnabled()); refreshDetectButton(); }
 });
 
 // ---------- Animation loop ----------
@@ -719,6 +785,7 @@ function tick() {
 
   const stats = applyFrame(currentTime);
   effects.update(currentTime);
+  detection?.flush();
 
   // spin drone rotors
   for (const r of rotorMeshes) r.rotation.y += dt * 40;
