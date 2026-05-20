@@ -33,11 +33,21 @@ from tqdm import tqdm
 CRS_WGS84 = CRS.from_epsg(4326)
 CRS_PROJECTED = CRS.from_epsg(32637)
 
+# ORG
+# DEFAULT_BBOX = {
+#     "south": 47.64,
+#     "west": 37.05,
+#     "north": 47.92,
+#     "east": 37.45,
+# }
+
+# Second revision
+
 DEFAULT_BBOX = {
-    "south": 47.64,
-    "west": 37.05,
-    "north": 47.92,
-    "east": 37.45,
+    "south": 48.8711945,
+    "west": 38.2002615,
+    "north": 48.8868365,
+    "east": 38.2384235
 }
 
 LAYER_DEFINITIONS: dict[str, dict[str, Any]] = {

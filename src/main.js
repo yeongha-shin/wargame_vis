@@ -21,6 +21,16 @@ const CAMERAS_URL = './data/cameras.json';
 const TERRAIN_TEXTURE_URL = './outputs/vuhledar_terrain_overlay.png';
 const HEIGHT_GRID_URL = './data/vuhledar_height_grid.png';
 
+// Trench mask: binary (0/1) CSV stretched over the same UV space as the
+// terrain grids — its native resolution does not need to match (bilinear
+// sampling acts as resize-to-fit). Vertex Y is depressed by `mask × DEPTH`
+// at each sample, so fractional values at cell edges give naturally sloped
+// trench walls. sampleHeight() for unit placement is left untouched, so
+// units continue to stand on the un-trenched surface.
+const TRENCH_MASK_URL = './data/vuhledar_trench_mask.csv';
+const TRENCH_DEPTH    = 2.5;    // world-m depression where mask = 1
+const TRENCH_FLIP_V   = false;  // true if CSV row 0 = south (default assumes north)
+
 // Ground plane covers the existing scenario world (±60 m). Both PNGs share the
 // same 613×636 pixel grid (one pixel = one 50 m AOI cell), and both have PNG
 // row 0 = north. We disable Three's default flipY so UV(0, 0) maps to the
@@ -143,9 +153,10 @@ async function start() {
 let sampleHeight = () => 0;
 let detection = null;
 try {
-  const [colorTex, heightGrid] = await Promise.all([
+  const [colorTex, heightGrid, trenchMask] = await Promise.all([
     loadTextureAsync(TERRAIN_TEXTURE_URL),
     loadGrayscaleGrid(HEIGHT_GRID_URL),
+    loadCsvMask(TRENCH_MASK_URL),
   ]);
   colorTex.colorSpace = THREE.SRGBColorSpace;
   colorTex.flipY = false;
@@ -156,8 +167,11 @@ try {
   const pos = geo.attributes.position;
   const uv = geo.attributes.uv;
   for (let i = 0; i < pos.count; i++) {
-    const h = sampleGridBilinear(heightGrid, uv.getX(i), uv.getY(i)) * HEIGHT_SCALE;
-    pos.setY(i, h);
+    const u = uv.getX(i);
+    const v = uv.getY(i);
+    const h = sampleGridBilinear(heightGrid, u, v) * HEIGHT_SCALE;
+    const m = sampleGridBilinear(trenchMask, u, TRENCH_FLIP_V ? 1 - v : v);
+    pos.setY(i, h - m * TRENCH_DEPTH);
   }
   geo.computeVertexNormals();
 
@@ -210,6 +224,28 @@ async function loadGrayscaleGrid(url) {
   const grid = new Float32Array(w * h);
   // Red channel of grayscale PNG — matches L-mode source.
   for (let i = 0; i < w * h; i++) grid[i] = data[i * 4] / 255;
+  return { w, h, grid };
+}
+
+async function loadCsvMask(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`failed to load ${url}: ${res.status}`);
+  const text = await res.text();
+  const lines = text.trim().split(/\r?\n/);
+  const h = lines.length;
+  const w = lines[0].split(',').length;
+  // Same {w, h, grid} shape as loadGrayscaleGrid so sampleGridBilinear works
+  // on it directly. Values are clamped to [0, 1] — currently 0/1 from the
+  // trench mask, but parsing as float keeps the door open for fractional
+  // depth multipliers later.
+  const grid = new Float32Array(w * h);
+  for (let y = 0; y < h; y++) {
+    const cells = lines[y].split(',');
+    for (let x = 0; x < w; x++) {
+      const val = parseFloat(cells[x]);
+      grid[y * w + x] = Number.isFinite(val) ? Math.max(0, Math.min(1, val)) : 0;
+    }
+  }
   return { w, h, grid };
 }
 
