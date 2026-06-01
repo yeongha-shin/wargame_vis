@@ -113,6 +113,76 @@
     #stats .bar-fill.incap { background: #f29e3c; opacity: 0.9; }
     #stats .bar.depleted .bar-fill.op { background: #5a2a2a; }
 
+    /* Cost section (money.csv) — visualised as a balance scale. The team
+       with the higher cumulative spend pulls its end of the beam DOWN; pan
+       dots are color-coded (blue left, red right) and rotate with the beam.
+       Labels above the beam stay horizontal so the digits remain readable
+       even at full tilt. A compact Fire/Damage breakdown lives below. */
+    #cost-section { margin-top: 10px; padding-top: 8px; border-top: 1px solid #1f2a36; }
+    #cost-section .cost-title { font-size: 11px; color: var(--muted); letter-spacing: 0.5px; padding-bottom: 6px; }
+
+    #cost-balance { padding: 0 4px; }
+    #cost-balance .cb-labels { display:flex; justify-content:space-between; font-size:10px; line-height:1.2; margin-bottom: 6px; }
+    #cost-balance .cb-label { display:flex; flex-direction:column; }
+    #cost-balance .cb-label.cb-right { text-align:right; align-items:flex-end; }
+    #cost-balance .cb-team { font-weight:700; letter-spacing:0.5px; }
+    #cost-balance .cb-team.team-blue { color: var(--blue); }
+    #cost-balance .cb-team.team-red  { color: var(--red); }
+    #cost-balance .cb-amount { font-variant-numeric: tabular-nums; font-size:13px; font-weight:600; }
+
+    #cost-balance .cb-beam-wrap {
+      position: relative;
+      height: 34px;
+      margin: 4px 0 0;
+    }
+    #cost-balance .cb-beam {
+      position: absolute;
+      top: 14px;
+      left: 6%;
+      width: 88%;
+      height: 3px;
+      background: linear-gradient(to right, var(--blue) 0%, #6e7a8a 30%, #6e7a8a 70%, var(--red) 100%);
+      border-radius: 2px;
+      transform-origin: center center;
+      transform: rotate(0deg);
+      transition: transform 0.3s ease-out;
+    }
+    #cost-balance .cb-pan {
+      position: absolute;
+      top: -4px;
+      width: 10px; height: 10px;
+      border-radius: 50%;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.5);
+    }
+    #cost-balance .cb-pan-left  { left:  -5px; background: var(--blue); }
+    #cost-balance .cb-pan-right { right: -5px; background: var(--red);  }
+    #cost-balance .cb-pivot {
+      position: absolute;
+      top: 17px; left: 50%;
+      transform: translateX(-50%);
+      width: 0; height: 0;
+      border-left: 7px solid transparent;
+      border-right: 7px solid transparent;
+      border-bottom: 12px solid #6a7280;   /* point UP — apex touches the beam from below */
+    }
+    #cost-balance .cb-base {
+      width: 60%; height: 2px;
+      margin: 0 auto;
+      background: #4a5260;
+      border-radius: 1px;
+    }
+
+    /* Fire/Damage breakdown beneath the scale — kept very compact so it
+       doesn't compete with the balance visual above. */
+    #cost-breakdown { margin-top: 8px; font-size: 10px; }
+    #cost-breakdown .cb-row { display:flex; justify-content:space-between; padding: 1px 0; }
+    #cost-breakdown .cb-row .cb-team-name { font-weight:600; letter-spacing:0.5px; }
+    #cost-breakdown .cb-row.team-blue .cb-team-name { color: var(--blue); }
+    #cost-breakdown .cb-row.team-red  .cb-team-name { color: var(--red); }
+    #cost-breakdown .cb-detail { color: var(--muted); font-variant-numeric: tabular-nums; }
+    #cost-breakdown .cb-detail .v { color: var(--text); }
+    #cost-breakdown .cb-detail .sep { padding: 0 4px; opacity: 0.4; }
+
     #controls {
       position:absolute; left:50%; transform:translateX(-50%); bottom:18px;
       display:flex; align-items:center; gap:10px; padding:10px 14px;
@@ -139,6 +209,37 @@
       width:14px; height:14px; background:var(--accent); border-radius:50%;
       cursor:pointer; border:2px solid #1a1300;
     }
+
+    /* ---------- Light theme override for the stats + inspector panels ----------
+       The bottom controls bar and the hover tooltip intentionally stay dark
+       (they float over the battlefield and need to recede). Only the side
+       info panels switch to a cream/off-white so the dense numeric content
+       reads more like a HUD card than a TV graphic.
+       Trick: redefining --text / --muted inside the panel rewrites every
+       descendant that references them, so individual rules don't need
+       per-element overrides. Hard-coded dark hex colors that exist in
+       specific rules (borders, bar backgrounds, hover states, the inspector
+       preview's dark backdrop) still need explicit light replacements. */
+    #stats, #inspector {
+      --text:  #1a2330;
+      --muted: #5a6878;
+      background: rgba(245, 248, 252, 0.94);
+      color: #1a2330;
+      border-color: #c7d0d8;
+      box-shadow: 0 6px 20px rgba(0, 0, 0, 0.15);
+    }
+    #stats .row.team-head { border-top-color: #d3d9e0; }
+    #stats .bar           { background: rgba(0, 0, 0, 0.08); }
+    #cost-section         { border-top-color: #d3d9e0; }
+    #inspector .insp-close:hover {
+      background: #dfe4ea;
+      color: #1a2330;
+    }
+    #inspector .insp-preview {
+      /* preview backdrop stays slightly recessed but no longer near-black —
+         a faint cool tint reads as "viewport" without going dark on light. */
+      background: rgba(0, 0, 0, 0.06);
+    }
   </style>
 </head>
 <body>
@@ -147,6 +248,7 @@
 <div id="stats" class="panel">
     <div class="row"><span class="label">Time</span><span id="stat-time">0.0s / 0.0s</span></div>
     <div id="stat-breakdown"></div>
+    <div id="cost-section"></div>
   </div>
 
   <div id="help" class="panel">

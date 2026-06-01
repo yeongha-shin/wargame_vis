@@ -3,9 +3,16 @@
 // Expected columns (header order is flexible, names are matched):
 //   timestamp, team, agent_type, agent_id, x, y, z, yaw, alive, event, target
 //
-// `alive` accepts the new three-state form `operational` / `incapacitated`
-// / `destroyed`, or the legacy 1/0 / true/false form (1/true → operational,
-// 0/false → destroyed).
+// `alive` carries the NATO 5-state kill classification:
+//   alive    — fully operational
+//   f_kill   — firepower kill (can move, can't shoot)
+//   m_kill   — mobility kill (can shoot, can't move)
+//   mf_kill  — mobility + firepower kill (crew alive, vehicle disabled)
+//   k_kill   — catastrophic kill (unit destroyed)
+// Legacy values are accepted for backwards compatibility:
+//   operational / 1 / true   → alive
+//   incapacitated            → mf_kill
+//   destroyed  / 0 / false   → k_kill
 // `timestamp` should be in ascending order; the loader sorts defensively
 // per-agent in case input is not strictly ordered.
 // `event` and `target` are optional. Rows with `event === 'fire'` are
@@ -28,13 +35,21 @@ function parseCsvText(text) {
   const hasEvent = 'event' in idx;
   const hasTarget = 'target' in idx;
 
-  // Three-state status with legacy boolean fallback.
+  // 5-state NATO kill classification with legacy 3-state / boolean fallback.
+  // Downstream renderer collapses (f_kill, m_kill, mf_kill) into one visual
+  // bucket; the raw value is preserved here for stats and the inspector.
   function parseStatus(raw) {
     const s = (raw ?? '').trim().toLowerCase();
-    if (s === 'incapacitated') return 'incapacitated';
-    if (s === 'destroyed' || s === '0' || s === 'false') return 'destroyed';
-    // 'operational', '1', 'true', and unknown values all map to operational.
-    return 'operational';
+    if (s === 'alive')   return 'alive';
+    if (s === 'f_kill')  return 'f_kill';
+    if (s === 'm_kill')  return 'm_kill';
+    if (s === 'mf_kill') return 'mf_kill';
+    if (s === 'k_kill')  return 'k_kill';
+    // Legacy mappings:
+    if (s === 'incapacitated')                           return 'mf_kill';
+    if (s === 'destroyed' || s === '0' || s === 'false') return 'k_kill';
+    // 'operational', '1', 'true', and unknown values all map to alive.
+    return 'alive';
   }
 
   // CSV yaw is stored in math convention: yaw = atan2(Δz, Δx), so the unit's
@@ -57,9 +72,9 @@ function parseCsvText(text) {
       yaw:    hasYaw ? (Math.PI / 2 - parseFloat(f[idx.yaw])) : 0,
       status,
       // `alive` is kept for downstream code that just needs "is the unit
-      // still on the battlefield" — destroyed flips it false; operational
-      // and incapacitated both keep it true.
-      alive:  status !== 'destroyed',
+      // still on the battlefield" — k_kill flips it false; every other
+      // state (alive, f_kill, m_kill, mf_kill) keeps it true.
+      alive:  status !== 'k_kill',
       event:  hasEvent  ? (f[idx.event]  ?? '').trim() : '',
       target: hasTarget ? (f[idx.target] ?? '').trim() : '',
     };

@@ -469,6 +469,33 @@ function makeDrone(team) {
   return g;
 }
 
+// Kamikaze / loitering-munition drone. Shares the recon drone airframe so
+// the silhouette + rotor spin animation stays identical — the only visual
+// difference is a small orange downward pyramid floating above the drone
+// (universally read as a "warning / payload" beacon) and a matching point
+// light that pulses faintly so the marker pops out even at long camera
+// distances. Keeping the marker as a child of the drone group means it
+// inherits position/yaw automatically, with no extra tick-loop bookkeeping.
+function makeSelfDestDrone(team) {
+  const g = makeDrone(team);
+  // 4-sided pyramid, point-down. Compact (0.3 base × 0.6 high) so it doesn't
+  // clutter the airframe, but emissive enough to read against dark terrain.
+  const markerGeo = new THREE.ConeGeometry(0.3, 0.6, 4);
+  const markerMat = new THREE.MeshStandardMaterial({
+    color: 0xff5522,
+    emissive: 0xff3300,
+    emissiveIntensity: 0.65,
+    roughness: 0.5,
+    metalness: 0.1,
+  });
+  const marker = new THREE.Mesh(markerGeo, markerMat);
+  marker.position.y = 1.5;          // floats clearly above the drone body
+  marker.rotation.z = Math.PI;      // flip default +Y cone to point DOWN at the drone
+  marker.castShadow = false;        // tiny floater — shadow would just be noise
+  g.add(marker);
+  return g;
+}
+
 function makeArtillery(team) {
   const c = TEAM_COLORS[team];
   const g = new THREE.Group();
@@ -1010,6 +1037,7 @@ const FACTORIES = {
   infantry: makeInfantry,
   tank: makeTank,
   drone: makeDrone,
+  self_dest_drone: makeSelfDestDrone,    // drone airframe + orange "kamikaze" beacon above
   artillery: makeArtillery,
   antitank: makeAntitank,
   command_post: makeCommandPost,

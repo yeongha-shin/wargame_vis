@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { createUnit } from './units.js';
 import { loadScenarioFromCsv } from './csvLoader.js';
+import { loadMoneyFromCsv, sampleMoney } from './moneyLoader.js';
 import { CinematicDirector, loadCameraSchedule } from './cinematic.js';
 import { EffectsManager, attachDamageEffect, createStatusRing } from './effects.js';
 import { DetectionOverlay } from './detection.js';
@@ -17,6 +18,7 @@ const STATUS_RING_Y = 0.7;
 import { unlockAudio, setMuted, isMuted } from './audio.js';
 
 const CSV_URL = './data/kaist_simulation.csv';
+const MONEY_URL = './data/money.csv';
 const CAMERAS_URL = './data/cameras.json';
 const TERRAIN_TEXTURE_URL = './outputs/vuhledar_terrain_overlay.png';
 const HEIGHT_GRID_URL = './data/vuhledar_height_grid.png';
@@ -30,6 +32,25 @@ const HEIGHT_GRID_URL = './data/vuhledar_height_grid.png';
 const TRENCH_MASK_URL = './data/vuhledar_trench_mask.csv';
 const TRENCH_DEPTH    = 2.5;    // world-m depression where mask = 1
 const TRENCH_FLIP_V   = false;  // true if CSV row 0 = south (default assumes north)
+
+// Forest grass tufts: where the terrain overlay PNG is green (forest class),
+// scatter InstancedMesh blades on the displaced ground. Green is detected
+// per pixel via a coarse RGB rule (G dominates R and B); each placement
+// jitters within one source-pixel cell so density follows the overlay
+// faithfully without snapping to a grid. The blade itself is a 2-triangle
+// cross-billboard (two perpendicular tris sharing the apex) so it reads as
+// a tuft from any camera angle without a custom shader.
+const GRASS_BLADE_COUNT  = 4000;     // total instances across all green cells
+const GRASS_BLADE_HEIGHT = 1.4;      // world-m tuft height (pre random scale)
+const GRASS_COLOR        = 0x7ab83a; // base green; per-instance brightness is jittered ±15%
+
+// Open-field debris: where the overlay PNG is tan (open_field class), scatter
+// two InstancedMeshes — many flat sand-patch domes and fewer faceted pebbles
+// with per-instance gray jitter — so the cell reads as a dusty/gravelly patch
+// instead of a flat color. Same UV→world placement as the grass.
+const OPEN_SAND_COUNT   = 2000;      // flat sand-patch instances
+const OPEN_PEBBLE_COUNT = 600;       // pebble/gravel instances
+const OPEN_SAND_COLOR   = 0xd9c08a;  // light tan; pebble color is jittered per-instance
 
 // Ground plane covers the existing scenario world (±60 m). Both PNGs share the
 // same 613×636 pixel grid (one pixel = one 50 m AOI cell), and both have PNG
@@ -52,6 +73,22 @@ const DETECTION_RADIUS = 8.0;
 // toggles with the same Detection mode as the drone rings.
 const COMMAND_DETECTION_RADIUS = 14.0;
 
+// Map the CSV's 5-state NATO kill classification onto the renderer's 3-state
+// visual scheme. Raw status is preserved on each keyframe for stats and the
+// inspector; only mesh/ring/effect/aim/scout logic collapses to these three
+// buckets:
+//   alive               → operational  (full color, fires + scouts, counts op)
+//   f/m/mf_kill         → incapacitated (darkened + amber ring + damage fx)
+//   k_kill              → destroyed     (mesh hidden + team-colored ring)
+const VISUAL_STATE = {
+  alive:   'operational',
+  f_kill:  'incapacitated',
+  m_kill:  'incapacitated',
+  mf_kill: 'incapacitated',
+  k_kill:  'destroyed',
+};
+const visualState = s => VISUAL_STATE[s] ?? 'operational';
+
 // ---------- Scene setup ----------
 const app = document.getElementById('app');
 const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -66,7 +103,10 @@ app.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x0b1116);
-scene.fog = new THREE.Fog(0x0b1116, 80, 220);
+// Fog intentionally disabled — it dimmed everything past ~80 m and turned
+// zoom-out into a fade-to-dark, which obscured the battlefield at wide
+// camera distances. Background still matches the old fog colour so the
+// horizon reads as the same dark sky.
 
 const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 600);
 camera.position.set(60, 55, 75);
@@ -195,6 +235,16 @@ try {
     if (u < 0 || u > 1 || v < 0 || v > 1) return 0;
     return sampleGridBilinear(heightGrid, u, v) * HEIGHT_SCALE;
   };
+
+  // Grass tufts on forest (green) cells. colorTex.image is the HTMLImageElement
+  // loaded by TextureLoader, which we re-read pixel-by-pixel via a 2D canvas
+  // to classify cells. Placed using the same UV→world mapping as sampleHeight.
+  const grass = buildForestGrass(colorTex.image, sampleHeight);
+  if (grass) scene.add(grass);
+
+  // Sand + pebbles on open_field (tan) cells.
+  const debris = buildOpenFieldDebris(colorTex.image, sampleHeight);
+  if (debris) scene.add(debris);
 } catch (err) {
   console.warn('terrain not loaded — falling back to flat ground:', err.message);
 }
@@ -263,6 +313,209 @@ function sampleGridBilinear(g, u, v) {
   const p01 = g.grid[y1 * g.w + x0];
   const p11 = g.grid[y1 * g.w + x1];
   return (1 - a) * ((1 - b) * p00 + b * p01) + a * ((1 - b) * p10 + b * p11);
+}
+
+function buildForestGrass(colorImage, sampleHeightFn) {
+  // Read terrain overlay pixels via a throwaway 2D canvas (same trick as
+  // loadGrayscaleGrid). One pass collects pixel coords of every forest
+  // (green) cell, then blades are scattered by sampling that list with
+  // sub-pixel jitter — independent of PNG resolution, fast even if the
+  // green class covers very little of the AOI.
+  const w = colorImage.width;
+  const h = colorImage.height;
+  if (!w || !h) return null;
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(colorImage, 0, 0);
+  const px = ctx.getImageData(0, 0, w, h).data;
+
+  const greenCells = [];
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = (y * w + x) * 4;
+      const r = px[i], g = px[i + 1], b = px[i + 2];
+      // Forest overlay color is CSS green (~0,128,0) with 0.8 alpha — G clearly
+      // dominates R and B. Urban gray (128,128,128) and tan open-field
+      // (210,180,140) both fail this and stay grass-free.
+      if (g > 80 && g > r + 40 && g > b + 40) greenCells.push(x, y);
+    }
+  }
+  if (greenCells.length === 0) return null;
+
+  // Each tuft = 3 tapered, slightly forward-curving blades fanned 120° apart
+  // around Y. Each blade is 3 triangles (5 unique points: base-L, base-R,
+  // mid-L, mid-R, tip) — wider at the base, half-width at the mid, single
+  // point at the tip, with the mid/tip vertices nudged forward (+Z in
+  // blade-local space) so the blade arcs rather than standing as a stiff
+  // spike. After per-vertex normals are computed from the winding, the curve
+  // gives the lighting a soft gradient up each blade.
+  const H = GRASS_BLADE_HEIGHT;
+  const bladeGeo = new THREE.BufferGeometry();
+  const positions = [];
+  const w0 = H * 0.045;   // base half-width
+  const w1 = H * 0.025;   // mid half-width (taper)
+  const cMid = H * 0.07;  // forward curve offset at mid
+  const cTip = H * 0.20;  // forward curve offset at tip
+  const yMid = H * 0.5;
+  for (let k = 0; k < 3; k++) {
+    const yaw = (k / 3) * Math.PI * 2;
+    const cs = Math.cos(yaw), sn = Math.sin(yaw);
+    // Rotate a blade-local (x, z) into the tuft frame.
+    const rx = (x, z) => x * cs - z * sn;
+    const rz = (x, z) => z * cs + x * sn;
+    const blx = rx(-w0, 0),    blz = rz(-w0, 0);
+    const brx = rx( w0, 0),    brz = rz( w0, 0);
+    const mlx = rx(-w1, cMid), mlz = rz(-w1, cMid);
+    const mrx = rx( w1, cMid), mrz = rz( w1, cMid);
+    const tx  = rx(  0, cTip), tz  = rz(  0, cTip);
+    positions.push(
+      blx, 0,    blz,   brx, 0,    brz,   mrx, yMid, mrz,   // lower-right tri
+      blx, 0,    blz,   mrx, yMid, mrz,   mlx, yMid, mlz,   // lower-left tri
+      mlx, yMid, mlz,   mrx, yMid, mrz,   tx,  H,    tz,    // upper tri to tip
+    );
+  }
+  bladeGeo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  bladeGeo.computeVertexNormals();
+
+  const bladeMat = new THREE.MeshStandardMaterial({
+    color: 0xffffff,    // base white — modulated by per-instance color
+    side: THREE.DoubleSide,
+    roughness: 0.95,
+    metalness: 0,
+  });
+
+  const mesh = new THREE.InstancedMesh(bladeGeo, bladeMat, GRASS_BLADE_COUNT);
+  mesh.name = 'terrain.grass';
+  mesh.receiveShadow = true;
+  // Blades intentionally do not cast shadow — too many tiny shadow casters
+  // tank performance and the visual gain is minimal at this game scale.
+
+  const dummy = new THREE.Object3D();
+  const tmpColor = new THREE.Color();
+  const baseColor = new THREE.Color(GRASS_COLOR);
+  const cellCount = greenCells.length / 2;
+  for (let i = 0; i < GRASS_BLADE_COUNT; i++) {
+    const c = Math.floor(Math.random() * cellCount) * 2;
+    const cx = greenCells[c];
+    const cy = greenCells[c + 1];
+    // Sub-pixel jitter so blades are spread continuously across each cell.
+    const u = (cx + Math.random()) / w;
+    const v = (cy + Math.random()) / h;
+    const wx = u * PLANE_SIZE - PLANE_SIZE / 2;
+    const wz = PLANE_SIZE / 2 - v * PLANE_SIZE;
+    const wy = sampleHeightFn(wx, wz);
+    dummy.position.set(wx, wy, wz);
+    dummy.rotation.set(0, Math.random() * Math.PI * 2, 0);
+    const s = 0.7 + Math.random() * 0.6;
+    dummy.scale.set(s, s, s);
+    dummy.updateMatrix();
+    mesh.setMatrixAt(i, dummy.matrix);
+    // Per-instance brightness jitter so the field isn't a single flat tone.
+    const shade = 0.85 + Math.random() * 0.30;
+    tmpColor.copy(baseColor).multiplyScalar(shade);
+    mesh.setColorAt(i, tmpColor);
+  }
+  mesh.instanceMatrix.needsUpdate = true;
+  if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+  return mesh;
+}
+
+function buildOpenFieldDebris(colorImage, sampleHeightFn) {
+  // Same canvas-read pattern as buildForestGrass — but the matched color is
+  // tan (open_field): warm-toned, R-dominant, B clearly below. Forest green,
+  // urban gray, water blue, railway purple all fail this rule.
+  const w = colorImage.width;
+  const h = colorImage.height;
+  if (!w || !h) return null;
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(colorImage, 0, 0);
+  const px = ctx.getImageData(0, 0, w, h).data;
+
+  const tanCells = [];
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = (y * w + x) * 4;
+      const r = px[i], g = px[i + 1], b = px[i + 2];
+      // CSS tan ~ (210, 180, 140): R > G > B, R clearly above mid, B noticeably lower.
+      if (r > 160 && r >= g && g > b + 20 && r > b + 40) tanCells.push(x, y);
+    }
+  }
+  if (tanCells.length === 0) return null;
+
+  const group = new THREE.Group();
+  group.name = 'terrain.openfield';
+  const cellCount = tanCells.length / 2;
+  const dummy = new THREE.Object3D();
+
+  // --- Sand patches: low flat domes, dense, uniform light-tan ------------
+  const sandGeo = new THREE.SphereGeometry(0.18, 6, 4);
+  const sandMat = new THREE.MeshStandardMaterial({
+    color: OPEN_SAND_COLOR, roughness: 1.0, metalness: 0,
+  });
+  const sand = new THREE.InstancedMesh(sandGeo, sandMat, OPEN_SAND_COUNT);
+  sand.name = 'terrain.sand';
+  sand.receiveShadow = true;
+
+  for (let i = 0; i < OPEN_SAND_COUNT; i++) {
+    const c = Math.floor(Math.random() * cellCount) * 2;
+    const u = (tanCells[c] + Math.random()) / w;
+    const v = (tanCells[c + 1] + Math.random()) / h;
+    const wx = u * PLANE_SIZE - PLANE_SIZE / 2;
+    const wz = PLANE_SIZE / 2 - v * PLANE_SIZE;
+    const wy = sampleHeightFn(wx, wz);
+    dummy.position.set(wx, wy + 0.02, wz);
+    dummy.rotation.set(0, Math.random() * Math.PI * 2, 0);
+    const s = 0.6 + Math.random() * 0.6;
+    dummy.scale.set(s, s * 0.35, s);   // squash Y so it sits as a low patch, not a ball
+    dummy.updateMatrix();
+    sand.setMatrixAt(i, dummy.matrix);
+  }
+  sand.instanceMatrix.needsUpdate = true;
+  group.add(sand);
+
+  // --- Pebbles: faceted icosahedrons, varied scale + per-instance shade ----
+  const pebbleGeo = new THREE.IcosahedronGeometry(0.22, 0);
+  const pebbleMat = new THREE.MeshStandardMaterial({
+    color: 0xffffff, roughness: 0.9, metalness: 0,
+  });
+  const pebble = new THREE.InstancedMesh(pebbleGeo, pebbleMat, OPEN_PEBBLE_COUNT);
+  pebble.name = 'terrain.pebble';
+  pebble.receiveShadow = true;
+
+  const tmpColor = new THREE.Color();
+  for (let i = 0; i < OPEN_PEBBLE_COUNT; i++) {
+    const c = Math.floor(Math.random() * cellCount) * 2;
+    const u = (tanCells[c] + Math.random()) / w;
+    const v = (tanCells[c + 1] + Math.random()) / h;
+    const wx = u * PLANE_SIZE - PLANE_SIZE / 2;
+    const wz = PLANE_SIZE / 2 - v * PLANE_SIZE;
+    const wy = sampleHeightFn(wx, wz);
+    dummy.position.set(wx, wy + 0.05, wz);
+    dummy.rotation.set(
+      Math.random() * Math.PI,
+      Math.random() * Math.PI * 2,
+      Math.random() * Math.PI,
+    );
+    const s = 0.5 + Math.random() * 0.9;
+    dummy.scale.set(s, s * (0.5 + Math.random() * 0.4), s);
+    dummy.updateMatrix();
+    pebble.setMatrixAt(i, dummy.matrix);
+    // Per-instance shade: warm gray spread so the field doesn't look like a
+    // uniform candy pile. Skews slightly toward brown.
+    const shade = 0.55 + Math.random() * 0.35;
+    tmpColor.setRGB(shade, shade * 0.92, shade * 0.82);
+    pebble.setColorAt(i, tmpColor);
+  }
+  pebble.instanceMatrix.needsUpdate = true;
+  if (pebble.instanceColor) pebble.instanceColor.needsUpdate = true;
+  group.add(pebble);
+
+  return group;
 }
 
 // ---------- Scenario / Agents ----------
@@ -348,7 +601,7 @@ loadingEl.remove();
 function findDeathPos(track) {
   let last = null;
   for (const kf of track) {
-    if (kf.status === 'destroyed') return last;
+    if (kf.status === 'k_kill') return last;
     last = kf;
   }
   return null;
@@ -360,7 +613,8 @@ const agents = scenario.agents.map(a => {
   scene.add(mesh);
   // Attach an incapacitated-state damage effect only for agents whose
   // track ever enters that status — saves nodes for the common case.
-  const hasIncap = a.track.some(kf => kf.status === 'incapacitated');
+  // Any of f/m/mf_kill collapses to the incapacitated visual.
+  const hasIncap = a.track.some(kf => visualState(kf.status) === 'incapacitated');
   const damage = hasIncap ? attachDamageEffect(mesh, a.type) : null;
 
   // Snapshot original material colors so the incapacitated darken can be
@@ -387,7 +641,7 @@ const agents = scenario.agents.map(a => {
     originalColors,
     ring,
     deathPos: findDeathPos(a.track),
-    statusApplied: 'operational',
+    visualApplied: 'operational',   // last 3-state visual applied (guards applyStatusVisuals)
   };
 });
 
@@ -536,7 +790,7 @@ function updateIntel() {
     const a = it.artillery;
     const sa = a.lastSample;
     const cmd = commandByTeam[it.spotTeam];
-    const alive = sa && sa.status !== 'destroyed';
+    const alive = sa && sa.status !== 'k_kill';
 
     // Accumulate intel: once the spotting team's recon has covered this
     // artillery's spot, it stays spotted (sticky) for the rest of the run.
@@ -710,12 +964,17 @@ function applyFrame(t) {
     ag.cursor = s.cursor;
     ag.lastSample = s;   // consumed by the intel pass after applyFrame
 
-    if (s.status !== ag.statusApplied) {
-      applyStatusVisuals(ag, s.status);
-      ag.statusApplied = s.status;
+    // Visual idempotency is keyed on the 3-state visual, not the raw 5-state,
+    // so transitions like f_kill→m_kill (same visual: incapacitated) skip the
+    // mutation work. The raw status is still exposed via ag.lastSample for
+    // the inspector and stats.
+    const vis = visualState(s.status);
+    if (vis !== ag.visualApplied) {
+      applyStatusVisuals(ag, vis);
+      ag.visualApplied = vis;
     }
 
-    if (s.status !== 'destroyed') {
+    if (s.status !== 'k_kill') {
       ag.mesh.visible = true;
       // CSV y is treated as AGL — ground units use 0, drones store altitude,
       // trench occupants use negative values to sit below the surface.
@@ -728,7 +987,7 @@ function applyFrame(t) {
       // Incapacitated drones are still on the field but out of action — they
       // don't scout.
       if (ag.scoutRing) {
-        const scouting = detection?.enabled && s.status === 'operational';
+        const scouting = detection?.enabled && s.status === 'alive';
         if (scouting) {
           detection.stamp(ag.spec.team, s.x, s.z, DETECTION_RADIUS);
           ag.scoutRing.position.set(s.x, sampleHeight(s.x, s.z) + 0.12, s.z);
@@ -740,7 +999,7 @@ function applyFrame(t) {
       // the apex caps the mast tip and the base sits on the terrain. Same
       // Detection-mode gate as the drone footprint; hidden once destroyed.
       if (ag.cpDome) {
-        const showing = detection?.enabled && s.status !== 'destroyed';
+        const showing = detection?.enabled && s.status !== 'k_kill';
         if (showing) {
           const gy = sampleHeight(s.x, s.z);
           ag.cpDome.position.set(s.x, gy + ag.cpDome.userData.apexY / 2 + 0.12, s.z);
@@ -750,8 +1009,9 @@ function applyFrame(t) {
 
       const turret = ag.mesh.userData.turret;
       // Incapacitated units stop aiming — they're still on the field but
-      // out of action. Only operational units track targets.
-      const ev = s.status === 'operational' ? activeFireEvent(ag.spec.id, t) : null;
+      // out of action. Only fully-alive units track targets (any kill state
+      // — f/m/mf — disables aiming, matching the incapacitated visual).
+      const ev = s.status === 'alive' ? activeFireEvent(ag.spec.id, t) : null;
       let aim = null;
       if (ev) {
         const targetAgent = agentsById.get(ev.target);
@@ -784,20 +1044,22 @@ function applyFrame(t) {
       }
 
       if (ag.damage) {
-        ag.damage.setVisible(s.status === 'incapacitated');
+        ag.damage.setVisible(vis === 'incapacitated');
         ag.damage.update(t);
       }
 
       // Status ring follows the live unit while it's incapacitated.
-      if (s.status === 'incapacitated') {
+      if (vis === 'incapacitated') {
         ag.ring.position.set(s.x, sampleHeight(s.x, s.z) + STATUS_RING_Y, s.z);
       }
 
       // Stats: track operational and incapacitated separately. Both count
       // as "still on the field" for the numeric tally; the bar splits them
-      // into two colored segments so the damaged fraction is visible.
-      const bucketKey = s.status === 'incapacitated' ? 'incap'
-                      : s.status === 'operational'   ? 'op'
+      // into two colored segments so the damaged fraction is visible. The
+      // raw 5-state is preserved on s.status for the inspector / hover —
+      // only the bucket sum collapses incap subtypes.
+      const bucketKey = vis === 'incapacitated' ? 'incap'
+                      : vis === 'operational'   ? 'op'
                       : null;
       if (bucketKey) {
         const bucket = counts[bucketKey][ag.spec.team];
@@ -835,14 +1097,15 @@ const $statTime = document.getElementById('stat-time');
 // fixed at load. Build the DOM once with placeholders for the live "alive"
 // counts; the tick loop just rewrites the numeric spans afterwards.
 const TYPE_LABELS = {
-  infantry:     'Infantry',
-  tank:         'Tank',
-  artillery:    'Artillery',
-  antitank:     'Antitank',
-  drone:        'Drone',
-  command_post: 'Command',
+  infantry:        'Infantry',
+  tank:            'Tank',
+  artillery:       'Artillery',
+  antitank:        'Antitank',
+  drone:           'Drone',
+  self_dest_drone: 'Kamikaze',
+  command_post:    'Command',
 };
-const TYPE_ORDER = ['infantry', 'tank', 'artillery', 'antitank', 'drone', 'command_post'];
+const TYPE_ORDER = ['infantry', 'tank', 'artillery', 'antitank', 'drone', 'self_dest_drone', 'command_post'];
 const TEAM_ORDER = ['blue', 'red'];
 
 const totals = { blue: {}, red: {} };
@@ -911,6 +1174,113 @@ function makeBar($bd, team, isSub) {
     }
   }
 })();
+
+// ---------- Money / cost timeline ----------
+// money.csv carries per-team cumulative cost (fire + damage) on a 1-second
+// grid. The series may end before the scenario does (e.g., 187 s vs 266 s) —
+// sampleMoney holds the last row past its end, so the panel just freezes
+// when the cost stream runs out instead of flashing back to zero.
+let moneySeries = { blue: [], red: [] };
+const moneyCursors = { blue: 0, red: 0 };
+const costRefs = {
+  beam: null,
+  blue: { total: null, fire: null, damage: null },
+  red:  { total: null, fire: null, damage: null },
+};
+
+try {
+  moneySeries = await loadMoneyFromCsv(MONEY_URL);
+} catch (err) {
+  console.warn('money.csv not loaded — cost panel will stay at zero:', err.message);
+}
+
+const fmtMoney = n => {
+  // Round half-away-from-zero to integer dollars, then insert thousands
+  // separators. Negative is unlikely but handled defensively.
+  const rounded = Math.round(n);
+  return rounded.toLocaleString('en-US');
+};
+
+// Maximum tilt of the balance beam at full one-sided dominance (ratio = ±1).
+// 22° reads as "clearly tilted" without the pan dots disappearing past the
+// panel's horizontal extent.
+const MAX_BEAM_ANGLE_DEG = 22;
+
+(function buildCostDOM() {
+  const $cs = document.getElementById('cost-section');
+  if (!$cs) return;
+
+  // Single-write template — innerHTML is fine here because the values come
+  // from local constants, not from CSV strings (those are textContent below
+  // so they're auto-escaped).
+  $cs.innerHTML = `
+    <div class="cost-title">COST BALANCE</div>
+    <div id="cost-balance">
+      <div class="cb-labels">
+        <span class="cb-label cb-left">
+          <span class="cb-team team-blue">BLUE</span>
+          <span class="cb-amount" data-team="blue" data-field="total">$0</span>
+        </span>
+        <span class="cb-label cb-right">
+          <span class="cb-team team-red">RED</span>
+          <span class="cb-amount" data-team="red" data-field="total">$0</span>
+        </span>
+      </div>
+      <div class="cb-beam-wrap">
+        <div class="cb-beam" id="cb-beam">
+          <span class="cb-pan cb-pan-left"></span>
+          <span class="cb-pan cb-pan-right"></span>
+        </div>
+        <div class="cb-pivot"></div>
+      </div>
+      <div class="cb-base"></div>
+    </div>
+    <div id="cost-breakdown">
+      <div class="cb-row team-blue">
+        <span class="cb-team-name">BLUE</span>
+        <span class="cb-detail">
+          Fire <span class="v" data-team="blue" data-field="fire">$0</span><span class="sep">·</span>Damage <span class="v" data-team="blue" data-field="damage">$0</span>
+        </span>
+      </div>
+      <div class="cb-row team-red">
+        <span class="cb-team-name">RED</span>
+        <span class="cb-detail">
+          Fire <span class="v" data-team="red" data-field="fire">$0</span><span class="sep">·</span>Damage <span class="v" data-team="red" data-field="damage">$0</span>
+        </span>
+      </div>
+    </div>
+  `;
+
+  costRefs.beam = document.getElementById('cb-beam');
+  for (const team of TEAM_ORDER) {
+    for (const field of ['total', 'fire', 'damage']) {
+      costRefs[team][field] = $cs.querySelector(`[data-team="${team}"][data-field="${field}"]`);
+    }
+  }
+})();
+
+function updateCostPanel(t) {
+  if (!costRefs.beam) return;
+  const sampled = {};
+  for (const team of TEAM_ORDER) {
+    const m = sampleMoney(moneySeries[team], t, moneyCursors[team]);
+    moneyCursors[team] = m.cursor;
+    sampled[team] = m;
+    costRefs[team].total.textContent  = `$${fmtMoney(m.total)}`;
+    costRefs[team].fire.textContent   = `$${fmtMoney(m.fire)}`;
+    costRefs[team].damage.textContent = `$${fmtMoney(m.damage)}`;
+  }
+  // Tilt: the heavier team's pan sinks. Blue sits on the left, so when
+  // blue > red the beam rotates counter-clockwise (CSS negative angle).
+  // ratio ∈ [-1, 1] is normalised by the sum so a 10 vs 1 split looks
+  // dramatic without needing logs; both-zero → flat.
+  const blueT = sampled.blue?.total ?? 0;
+  const redT  = sampled.red?.total ?? 0;
+  const sum = blueT + redT;
+  const ratio = sum > 0 ? (blueT - redT) / sum : 0;
+  const deg = -ratio * MAX_BEAM_ANGLE_DEG;
+  costRefs.beam.style.transform = `rotate(${deg.toFixed(2)}deg)`;
+}
 
 let currentTime = 0;
 let playing = true;
@@ -1047,10 +1417,15 @@ const $inspId     = document.getElementById('insp-id');
 const $inspStatus = document.getElementById('insp-status');
 const $inspDot    = document.getElementById('insp-dot');
 
+// 5-state NATO kill labels. The dot color still resolves via visualState()
+// so the existing 3-class CSS (operational/incapacitated/destroyed) keeps
+// driving the colored swatch; only the text gives away the exact kill type.
 const STATUS_LABELS = {
-  operational:   'Operational',
-  incapacitated: 'Incapacitated',
-  destroyed:     'Destroyed',
+  alive:   'Alive',
+  f_kill:  'F-kill (Firepower)',
+  m_kill:  'M-kill (Mobility)',
+  mf_kill: 'MF-kill (Mobility + Firepower)',
+  k_kill:  'K-kill (Catastrophic)',
 };
 
 const PREV_W = 184, PREV_H = 170;
@@ -1124,12 +1499,13 @@ function closeInspector() {
 // while nothing is selected.
 function renderInspector(dt) {
   if (!selectedAgent) return;
-  const st = selectedAgent.lastSample?.status
-           ?? selectedAgent.statusApplied ?? 'operational';
+  const st = selectedAgent.lastSample?.status ?? 'alive';
   if (st !== _lastStatusShown) {
     _lastStatusShown = st;
     $inspStatus.textContent = STATUS_LABELS[st] ?? st;
-    $inspDot.className = `dot ${st}`;
+    // Dot color uses the 3-state visual mapping (CSS classes haven't
+    // changed); the text above carries the exact 5-state distinction.
+    $inspDot.className = `dot ${visualState(st)}`;
   }
   previewHolder.rotation.y += dt * 0.6;
   previewRenderer.render(previewScene, previewCamera);
@@ -1167,6 +1543,7 @@ function tick() {
   effects.update(currentTime);
   detection?.flush();
   updateIntel();   // recon→command arrows (uses this frame's coverage + positions)
+  updateCostPanel(currentTime);   // step-hold sample of money.csv keyed on scenario time
 
   // spin drone rotors
   for (const r of rotorMeshes) r.rotation.y += dt * 40;
