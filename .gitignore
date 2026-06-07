@@ -1,7 +1,4 @@
 # Large data artifacts — tracked outside git
-data_raw/
-data_processed/
-outputs/
 cache/
 
 # Python

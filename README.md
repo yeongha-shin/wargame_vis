@@ -7,7 +7,8 @@ three.js 기반 워게임 시뮬레이션 리플레이 데모. 외부 GLTF 모�
 ES module과 importmap을 쓰기 때문에 `file://` 로는 동작하지 않습니다. 로컬 HTTP 서버를 띄우세요.
 
 ```bash
-cd /home/yeongha/pycharm/wargame/demo
+git clone https://github.com/yeongha-shin/wargame_vis.git
+cd ~/wargame_vis
 python3 -m http.server 8080
 ```
 
