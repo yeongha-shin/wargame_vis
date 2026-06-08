@@ -194,7 +194,7 @@ export function generateScenario(opts = {}) {
   // ---- Red (north, advancing south) ----
   // 4 of 8 start in defensive trenches and emerge on staggered cues; the
   // other 4 march in from the north edge as before.
-  // Trench polylines are mirrored from data/terrain.json:
+  // Trench polylines are mirrored from results/terrain.json:
   //   left  trench: (-18,18) → (-3,18)
   //   right trench: ( 3,22) → (20,22)
   const trenchAssign = {

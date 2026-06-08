@@ -17,7 +17,7 @@ python3 -m http.server 8080
 브라우저에서 http://localhost:8080 접속.
 
 > 재생되는 데이터 파일은 `src/main.js` 상단의 `CSV_URL` / `CAMERAS_URL` 로 지정됩니다
-> (현재 기본값: `data/kaist_simulation.csv`, `data/cameras.json`). 파일을 바꾸면 새로고침만 하면 됩니다.
+> (현재 기본값: `results/kaist_simulation.csv`, `results/cameras.json`). 파일을 바꾸면 새로고침만 하면 됩니다.
 
 ---
 
@@ -138,7 +138,7 @@ scripts/rebuild_terrain.sh 48.8711945 38.2002615 48.8868365 38.2384235
 
 생성/덮어쓰는 파일:
 - `outputs/vuhledar_terrain_overlay.png` — 색상 오버레이 (urban/forest/open_field/water/railway)
-- `data/vuhledar_height_grid.png` — grayscale 높이맵
+- `results/vuhledar_height_grid.png` — grayscale 높이맵
 
 내부 동작: `build_vuhledar_terrain.py`로 OSM + Copernicus DEM(자동 다운로드)을 받아 50 m 격자를 분류·표고 샘플링하고, 이어서 `scripts/dump_height_overlay.py`가 격자 CSV에서 높이 PNG를 뽑습니다.
 
@@ -146,7 +146,7 @@ scripts/rebuild_terrain.sh 48.8711945 38.2002615 48.8868365 38.2384235
 - 셀 크기는 **50 m 고정** — `dump_height_overlay.py`가 `data_processed/terrain_grid_50m.csv`를 이름으로 읽기 때문. 다른 해상도가 필요하면 그 스크립트도 같이 손봐야 합니다.
 - Python은 기본 `/home/yeongha/anaconda3/envs/geo_env/bin/python` (osmnx · geopandas · rasterio · rioxarray · folium 필요). 다른 환경이면 `PYTHON=/path/to/python scripts/rebuild_terrain.sh ...`.
 - DEM 타일을 새로 받으면 영역에 따라 수십 MB / 1~2분. OSM에 빌딩이 없는 시골 지역이면 buildings 레이어는 0개로 잡혀도 정상.
-- 지형 PNG는 고정된 120 m × 120 m 게임 평면 위에 입히는 스킨일 뿐 — 유닛 위치(`data/kaist_simulation.csv`)는 자동으로 새 좌표로 이동하지 않습니다.
+- 지형 PNG는 고정된 120 m × 120 m 게임 평면 위에 입히는 스킨일 뿐 — 유닛 위치(`results/kaist_simulation.csv`)는 자동으로 새 좌표로 이동하지 않습니다.
 
 ---
 

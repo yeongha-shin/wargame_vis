@@ -1,5 +1,5 @@
 {
-  "_comment": "Vector overlays drawn on top of the DEM heightmap. Coordinates are world-space (x, z) in meters. The DEM (data/terrain.dem) carries the actual ground elevation; the trench polylines below are also dipped into the DEM by scripts/dump_dem.mjs so the visual depression matches.",
+  "_comment": "Vector overlays drawn on top of the DEM heightmap. Coordinates are world-space (x, z) in meters. The DEM (results/terrain.dem) carries the actual ground elevation; the trench polylines below are also dipped into the DEM by scripts/dump_dem.mjs so the visual depression matches.",
   "roads": [
     {
       "name": "main_road",

@@ -45,7 +45,7 @@ python3 -m http.server 8080
 demo/
 ├── index.html              HUD, importmap, 컨트롤
 ├── package.json            Node가 .js를 ESM으로 인식하게 함 (브라우저는 무시)
-├── data/
+├── results/
 │   ├── battle.csv          ★ 유닛 트랙 데이터 (timestamp 정렬)
 │   └── cameras.json        ★ 카메라 스케줄 (시네마틱 컷)
 ├── scripts/
@@ -59,7 +59,7 @@ demo/
     └── scenario.js         더미 시나리오 생성기 (덤프 스크립트 전용, 런타임 미사용)
 ```
 
-## 카메라 스케줄 — `data/cameras.json`
+## 카메라 스케줄 — `results/cameras.json`
 
 타임스탬프별로 어떤 시점으로 보여줄지 정의합니다. 배열 형태이며 t 오름차순.
 
@@ -92,7 +92,7 @@ demo/
 - `[5, 3, 0]`  → 우측면 5m, 3m 위 (사이드뷰)
 yaw가 π여도 회전이 자동 적용되므로 `[0, 4, -10]`은 항상 "뒤"입니다.
 
-## 데이터 형식 — `data/battle.csv`
+## 데이터 형식 — `results/battle.csv`
 
 컬럼 순서는 헤더 기준으로 매칭되므로 자유롭게 바꿔도 됩니다. 헤더 이름은 고정.
 
@@ -154,7 +154,7 @@ node scripts/dump_csv.mjs              # seed=7, duration=60 (기본값)
 node scripts/dump_csv.mjs 42 90        # seed=42, duration=90초
 ```
 
-→ `data/battle.csv` 가 덮어써집니다.
+→ `results/battle.csv` 가 덮어써집니다.
 
 ## 실제 시뮬레이션과 연결
 
@@ -162,7 +162,7 @@ Python 시뮬에서 같은 스키마로 CSV를 떨어뜨리면 끝입니다. 예
 
 ```python
 import csv
-with open('demo/data/battle.csv', 'w', newline='') as f:
+with open('demo/results/battle.csv', 'w', newline='') as f:
     w = csv.writer(f)
     w.writerow(['timestamp','team','agent_type','agent_id','x','y','z','yaw','alive'])
     for row in sorted(events, key=lambda r: r['t']):

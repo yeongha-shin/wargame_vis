@@ -19,7 +19,7 @@ Pipeline:
     the highest peak of the AOI and 0 is the lowest valley.
   - Save as L-mode PNG, top row = north, to match terrain_overlay.png.
 
-Output: data/vuhledar_height_grid.png
+Output: results/vuhledar_height_grid.png
 """
 
 from pathlib import Path

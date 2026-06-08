@@ -53,5 +53,5 @@ echo
 echo
 echo "[rebuild] DONE"
 echo "  outputs/vuhledar_terrain_overlay.png"
-echo "  data/vuhledar_height_grid.png"
+echo "  results/vuhledar_height_grid.png"
 echo "[rebuild] Browser cache: hard-refresh (Ctrl+Shift+R) to pick up new textures."

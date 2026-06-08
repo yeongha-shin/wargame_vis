@@ -1,5 +1,5 @@
 // Generate a dummy DEM (digital elevation model) for the demo battlefield.
-// Output: data/terrain.dem in ESRI ASCII grid format.
+// Output: results/terrain.dem in ESRI ASCII grid format.
 //
 // Usage: node scripts/dump_dem.mjs [seed]
 //
@@ -48,7 +48,7 @@ const rng = mulberry32(seed);
 // Trench dips: read from terrain.json so DEM stays consistent with overlays.
 let trenches = [];
 try {
-  const tj = JSON.parse(readFileSync(resolve(projectRoot, 'data/terrain.json'), 'utf8'));
+  const tj = JSON.parse(readFileSync(resolve(projectRoot, 'results/terrain.json'), 'utf8'));
   trenches = tj.trenches ?? [];
 } catch {
   // terrain.json not yet authored — fine, just no trench dips.
@@ -129,7 +129,7 @@ for (let r = NROWS - 1; r >= 0; r--) {
   lines.push(row.join(' '));
 }
 
-const outPath = resolve(projectRoot, 'data/terrain.dem');
+const outPath = resolve(projectRoot, 'results/terrain.dem');
 mkdirSync(dirname(outPath), { recursive: true });
 writeFileSync(outPath, lines.join('\n') + '\n');
 

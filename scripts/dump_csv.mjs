@@ -1,4 +1,4 @@
-// Regenerate data/battle.csv from the dummy scenario.
+// Regenerate results/battle.csv from the dummy scenario.
 // Usage: node scripts/dump_csv.mjs [seed] [duration]
 //
 // Emits position keyframe rows AND fire-event rows in one CSV. An event row
@@ -82,7 +82,7 @@ for (const r of rows) {
   ].join(','));
 }
 
-const outPath = resolve(projectRoot, 'data/battle.csv');
+const outPath = resolve(projectRoot, 'results/battle.csv');
 mkdirSync(dirname(outPath), { recursive: true });
 writeFileSync(outPath, lines.join('\n') + '\n');
 

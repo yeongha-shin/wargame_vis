@@ -17,11 +17,11 @@ const INCAP_DARKEN     = 0.45; // multiply original material color by this
 const STATUS_RING_Y = 0.7;
 import { unlockAudio, setMuted, isMuted } from './audio.js';
 
-const CSV_URL = './data/kaist_simulation.csv';
-const MONEY_URL = './data/money.csv';
-const CAMERAS_URL = './data/cameras.json';
+const CSV_URL = './results/kaist_simulation.csv';
+const MONEY_URL = './results/money.csv';
+const CAMERAS_URL = './results/cameras.json';
 const TERRAIN_TEXTURE_URL = './outputs/vuhledar_terrain_overlay.png';
-const HEIGHT_GRID_URL = './data/vuhledar_height_grid.png';
+const HEIGHT_GRID_URL = './results/vuhledar_height_grid.png';
 
 // Trench mask: binary (0/1) CSV stretched over the same UV space as the
 // terrain grids — its native resolution does not need to match (bilinear
@@ -29,7 +29,7 @@ const HEIGHT_GRID_URL = './data/vuhledar_height_grid.png';
 // at each sample, so fractional values at cell edges give naturally sloped
 // trench walls. sampleHeight() for unit placement is left untouched, so
 // units continue to stand on the un-trenched surface.
-const TRENCH_MASK_URL = './data/vuhledar_trench_mask.csv';
+const TRENCH_MASK_URL = './results/vuhledar_trench_mask.csv';
 const TRENCH_DEPTH    = 2.5;    // world-m depression where mask = 1
 const TRENCH_FLIP_V   = false;  // true if CSV row 0 = south (default assumes north)
 
@@ -185,7 +185,7 @@ async function start() {
 
 // ---------- Terrain (elevation-displaced plane with terrain_type color overlay) ----------
 // Color: outputs/vuhledar_terrain_overlay.png (urban/forest/water/etc. classes).
-// Height: data/vuhledar_height_grid.png — grayscale elevation_m normalized to
+// Height: results/vuhledar_height_grid.png — grayscale elevation_m normalized to
 // [0, 1] over the AOI's actual elevation range. Elevation is the raw DEM (not
 // a derivative), so it's intrinsically smooth at the 50 m grid scale; the
 // dump script also pre-smooths it to anti-alias against the heavy 31 km → 120 m
