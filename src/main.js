@@ -17,11 +17,11 @@ const INCAP_DARKEN     = 0.45; // multiply original material color by this
 const STATUS_RING_Y = 0.7;
 import { unlockAudio, setMuted, isMuted } from './audio.js';
 
-const CSV_URL = './results/kaist_simulation.csv';
-const MONEY_URL = './results/money.csv';
-const CAMERAS_URL = './results/cameras.json';
+const CSV_URL = '../results/simulation.csv';
+const MONEY_URL = '../results/money.csv';
+const CAMERAS_URL = '../results/cameras.json';
 const TERRAIN_TEXTURE_URL = './outputs/vuhledar_terrain_overlay.png';
-const HEIGHT_GRID_URL = './results/vuhledar_height_grid.png';
+const HEIGHT_GRID_URL = '../results/vuhledar_height_grid.png';
 
 // Trench mask: binary (0/1) CSV stretched over the same UV space as the
 // terrain grids — its native resolution does not need to match (bilinear
@@ -29,7 +29,7 @@ const HEIGHT_GRID_URL = './results/vuhledar_height_grid.png';
 // at each sample, so fractional values at cell edges give naturally sloped
 // trench walls. sampleHeight() for unit placement is left untouched, so
 // units continue to stand on the un-trenched surface.
-const TRENCH_MASK_URL = './results/vuhledar_trench_mask.csv';
+const TRENCH_MASK_URL = '../results/vuhledar_trench_mask.csv';
 const TRENCH_DEPTH    = 2.5;    // world-m depression where mask = 1
 const TRENCH_FLIP_V   = false;  // true if CSV row 0 = south (default assumes north)
 
@@ -522,7 +522,7 @@ function buildOpenFieldDebris(colorImage, sampleHeightFn) {
 const scenario = await loadScenarioFromCsv(CSV_URL);
 loadingEl.remove();
 
-// kaist_simulation.csv stores real-world meters (x,z span thousands; y is
+// simulation.csv stores real-world meters (x,z span thousands; y is
 // absolute elevation), while the demo world is a ±60 m square. Recenter the
 // action at the origin and scale uniformly to fit ~100 m, then shift y so the
 // lowest sample sits at 0 — `sampleHeight + y` then renders ground units near
